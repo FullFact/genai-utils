@@ -1,0 +1,48 @@
+[project]
+name = "genai-utils"
+version = "0.0.1"
+description = "A library that facilitates the querying of Gen AI models."
+authors = [{ name = "Full Fact", email = "afc@fullfact.org" }]
+maintainers = [{ name = "Full Fact", email = "afc@fullfact.org" }]
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.10"
+dependencies = [
+    "google-cloud-core>=2.4.3",
+    "google-genai>=1.27.0",
+    "json-repair~=0.40.0",
+    "pydantic>=2.11.7",
+    "rapidfuzz>=3.13.0",
+    "requests>=2.32.4",
+]
+
+[build-system]
+requires = ["setuptools >= 61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "flake8>=7.3.0",
+    "black>=25.1.0",
+    "isort>=5.12.0",
+    "mypy>=1.4.1",
+    "pre-commit>=3.3.3",
+    "pytest>=7.4.0",
+    "types-requests>=2.32.4",
+    "pytest-asyncio>=0.21.1",
+]
+
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = []
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+warn_unused_configs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
