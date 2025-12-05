@@ -187,8 +187,10 @@ def add_citations(response: types.GenerateContentResponse) -> str:
 
     # Sort supports by end_index in descending order to avoid shifting issues when inserting.
     sorted_supports: list[types.GroundingSupport] = sorted(
-        supports, key=lambda s: s.segment.end_index, reverse=True
-    )  # type: ignore
+        supports,
+        key=lambda s: s.segment.end_index,  # type: ignore
+        reverse=True,
+    )
 
     for support in sorted_supports:
         segment = support.segment
@@ -400,7 +402,6 @@ def run_prompt(
 
     if inline_citations and not use_grounding:
         raise GeminiError("Inline citations only work if `use_grounding = True`")
-
     merged_labels = DEFAULT_LABELS | labels
     validate_labels(merged_labels)
 
