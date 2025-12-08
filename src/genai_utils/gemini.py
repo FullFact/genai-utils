@@ -37,6 +37,12 @@ DEFAULT_PARAMETERS = {
     "top_p": 1,
 }
 
+DEFAULT_LABELS = {
+    key.removeprefix("GENAI_LABEL_").lower(): value
+    for key, value in os.environ.items()
+    if key.startswith("GENAI_LABEL_")
+}
+
 
 class GeminiError(Exception):
     """
@@ -180,7 +186,11 @@ def add_citations(response: types.GenerateContentResponse) -> str:
             links.append(follow_redirect(url))
 
     # Sort supports by end_index in descending order to avoid shifting issues when inserting.
-    sorted_supports: list[types.GroundingSupport] = sorted(supports, key=lambda s: s.segment.end_index, reverse=True)  # type: ignore
+    sorted_supports: list[types.GroundingSupport] = sorted(
+        supports,
+        key=lambda s: s.segment.end_index,  # type: ignore
+        reverse=True,
+    )
 
     for support in sorted_supports:
         segment = support.segment
@@ -200,6 +210,52 @@ def add_citations(response: types.GenerateContentResponse) -> str:
             text = insert_citation(text, citation_string, end_index)
 
     return text
+
+
+def validate_labels(labels: dict[str, str]) -> None:
+    """
+    Validates labels for GCP requirements.
+
+    GCP label requirements:
+    - Keys must start with a lowercase letter
+    - Keys and values can only contain lowercase letters, numbers, hyphens, and underscores
+    - Keys and values must be max 63 characters
+    - Keys cannot be empty
+
+    Raises:
+        GeminiError: If labels don't meet GCP requirements
+    """
+    label_pattern = re.compile(r"^[a-z0-9_-]{1,63}$")
+    key_start_pattern = re.compile(r"^[a-z]")
+
+    for key, value in labels.items():
+        if not key:
+            raise GeminiError("Label keys cannot be empty")
+
+        if len(key) > 63:
+            raise GeminiError(
+                f"Label key '{key}' exceeds 63 characters (length: {len(key)})"
+            )
+
+        if len(value) > 63:
+            raise GeminiError(
+                f"Label value for key '{key}' exceeds 63 characters (length: {len(value)})"
+            )
+
+        if not key_start_pattern.match(key):
+            raise GeminiError(f"Label key '{key}' must start with a lowercase letter")
+
+        if not label_pattern.match(key):
+            raise GeminiError(
+                f"Label key '{key}' contains invalid characters. "
+                "Only lowercase letters, numbers, hyphens, and underscores are allowed"
+            )
+
+        if not label_pattern.match(value):
+            raise GeminiError(
+                f"Label value '{value}' for key '{key}' contains invalid characters. "
+                "Only lowercase letters, numbers, hyphens, and underscores are allowed"
+            )
 
 
 def check_grounding_ran(response: types.GenerateContentResponse) -> bool:
@@ -246,6 +302,7 @@ def run_prompt(
     model_config: ModelConfig | None = None,
     use_grounding: bool = False,
     inline_citations: bool = False,
+    labels: dict[str, str] = {},
 ) -> str:
     """
     Runs a prompt through the model.
@@ -298,6 +355,10 @@ def run_prompt(
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
         This is only possible if grounding is set to true.
+    labels: dict[str, str]
+        Optional labels to attach to the API call for tracking and monitoring purposes.
+        Labels are key-value pairs that can be used to organize and filter requests
+        in Google Cloud logs and metrics.
 
     Returns
     -------
@@ -341,6 +402,8 @@ def run_prompt(
 
     if inline_citations and not use_grounding:
         raise GeminiError("Inline citations only work if `use_grounding = True`")
+    merged_labels = DEFAULT_LABELS | labels
+    validate_labels(merged_labels)
 
     response = client.models.generate_content(
         model=model_config.model_name,
@@ -349,6 +412,7 @@ def run_prompt(
             system_instruction=system_instruction,
             safety_settings=safety_settings,
             **built_gen_config,
+            labels=merged_labels,
         ),
     )
 
