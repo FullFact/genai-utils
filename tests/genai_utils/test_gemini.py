@@ -2,6 +2,7 @@ import os
 from unittest.mock import Mock, patch
 
 from google.genai import Client
+from google.genai.client import AsyncClient
 from google.genai.models import Models
 from pydantic import BaseModel, Field
 
@@ -10,7 +11,7 @@ from genai_utils.gemini import (
     GeminiError,
     ModelConfig,
     generate_model_config,
-    run_prompt,
+    run_prompt_async,
 )
 
 
@@ -24,7 +25,7 @@ class DummySchema(BaseModel):
     colour: str = Field(description="Colour of dog")
 
 
-def get_dummy():
+async def get_dummy():
     return DummyResponse()
 
 
@@ -57,17 +58,19 @@ def test_generate_model_config_no_env_vars():
 
 
 @patch("genai_utils.gemini.genai.Client")
-def test_dont_overwrite_generation_config(mock_client):
+async def test_dont_overwrite_generation_config(mock_client):
     copy_of_params = {**DEFAULT_PARAMETERS}
     client = Mock(Client)
     models = Mock(Models)
+    async_client = Mock(AsyncClient)
 
     models.generate_content.return_value = get_dummy()
-    client.models = models
+    client.aio = async_client
+    async_client.models = models
     mock_client.return_value = client
 
     assert DEFAULT_PARAMETERS == copy_of_params
-    run_prompt(
+    await run_prompt_async(
         "do something",
         output_schema=DummySchema,
         model_config=ModelConfig(
@@ -75,7 +78,7 @@ def test_dont_overwrite_generation_config(mock_client):
         ),
     )
     models.generate_content.return_value = get_dummy()
-    run_prompt(
+    await run_prompt_async(
         "do something",
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
@@ -89,16 +92,18 @@ def test_dont_overwrite_generation_config(mock_client):
 
 
 @patch("genai_utils.gemini.genai.Client")
-def test_error_if_grounding_with_schema(mock_client):
+async def test_error_if_grounding_with_schema(mock_client):
     client = Mock(Client)
     models = Mock(Models)
+    async_client = Mock(AsyncClient)
 
     models.generate_content.return_value = get_dummy()
-    client.models = models
+    client.aio = async_client
+    async_client.models = models
     mock_client.return_value = client
 
     try:
-        run_prompt(
+        await run_prompt_async(
             "do something",
             output_schema=DummySchema,
             use_grounding=True,
@@ -114,16 +119,18 @@ def test_error_if_grounding_with_schema(mock_client):
 
 
 @patch("genai_utils.gemini.genai.Client")
-def test_error_if_citations_and_no_grounding(mock_client):
+async def test_error_if_citations_and_no_grounding(mock_client):
     client = Mock(Client)
     models = Mock(Models)
+    async_client = Mock(AsyncClient)
 
     models.generate_content.return_value = get_dummy()
-    client.models = models
+    client.aio = async_client
+    async_client.models = models
     mock_client.return_value = client
 
     try:
-        run_prompt(
+        await run_prompt_async(
             "do something",
             use_grounding=False,
             inline_citations=True,

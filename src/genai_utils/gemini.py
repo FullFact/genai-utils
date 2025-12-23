@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -305,6 +306,37 @@ def run_prompt(
     labels: dict[str, str] = {},
 ) -> str:
     """
+    A synchronous version of `run_prompt_async`.
+    """
+    return asyncio.run(
+        run_prompt_async(
+            prompt=prompt,
+            video_uri=video_uri,
+            output_schema=output_schema,
+            system_instruction=system_instruction,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            model_config=model_config,
+            use_grounding=use_grounding,
+            inline_citations=inline_citations,
+            labels=labels,
+        )
+    )
+
+
+async def run_prompt_async(
+    prompt: str,
+    video_uri: str | None = None,
+    output_schema: types.SchemaUnion | None = None,
+    system_instruction: str | None = None,
+    generation_config: dict[str, Any] = DEFAULT_PARAMETERS,
+    safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
+    model_config: ModelConfig | None = None,
+    use_grounding: bool = False,
+    inline_citations: bool = False,
+    labels: dict[str, str] = {},
+) -> str:
+    """
     Runs a prompt through the model.
 
     Parameters
@@ -405,7 +437,7 @@ def run_prompt(
     merged_labels = DEFAULT_LABELS | labels
     validate_labels(merged_labels)
 
-    response = client.models.generate_content(
+    response = await client.aio.models.generate_content(
         model=model_config.model_name,
         contents=types.Content(role="user", parts=parts),
         config=types.GenerateContentConfig(
