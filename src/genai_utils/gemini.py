@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -305,6 +306,98 @@ def run_prompt(
     labels: dict[str, str] = {},
 ) -> str:
     """
+    A synchronous version of `run_prompt_async`.
+
+    Parameters
+    ----------
+    prompt: str
+        The prompt given to the model
+    video_uri: str | None
+        A Google Cloud URI for a video that you want to prompt.
+    output_schema: types.SchemaUnion | None
+        A valid schema for the model output.
+        Generally, we'd recommend this being a pydantic BaseModel inheriting class,
+        which defines the desired schema of the model output.
+        ```python
+        from pydantic import BaseModel, Field
+
+        class Movie(BaseModel):
+            title: str = Field(description="The title of the movie")
+            year: int = Field(description="The year the film was released in the UK")
+
+        schema = Movie
+        # or
+        schema = list[Movie]
+        ```
+        Use this if you want structured JSON output.
+    system_instruction: str | None
+        An instruction to the model which essentially goes before the prompt.
+        For example:
+        ```
+        You are a fact checker and you must base all your answers on evidence
+        ```
+    generation_config: dict[str, Any]
+        The parameters for the generation. See the docs (`generation config`_).
+    safety_settings: dict[generative_models.HarmCategory, generative_models.HarmBlockThreshold]
+        The safety settings for generation. Determines what will be blocked.
+        See the docs (`safety settings`_)
+    model_config: ModelConfig | None
+        The config for the Gemini model.
+        Specifies project, location, and model name.
+        If None, will attempt to use environment variables:
+        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
+    use_grounding: bool
+        Whether Gemini should perform a Google search to ground results.
+        This will allow it to pull from up-to-date information,
+        and makes the output more likely to be factual.
+        Does not work with structured output.
+        See the docs (`grounding`_).
+    inline_citations: bool
+        Whether output should include citations inline with the text.
+        These citations will be links to be used as evidence.
+        This is only possible if grounding is set to true.
+    labels: dict[str, str]
+        Optional labels to attach to the API call for tracking and monitoring purposes.
+        Labels are key-value pairs that can be used to organize and filter requests
+        in Google Cloud logs and metrics.
+
+    Returns
+    -------
+    The text output of the Gemini model.
+
+    .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
+    .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
+    .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
+    """
+    return asyncio.run(
+        run_prompt_async(
+            prompt=prompt,
+            video_uri=video_uri,
+            output_schema=output_schema,
+            system_instruction=system_instruction,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            model_config=model_config,
+            use_grounding=use_grounding,
+            inline_citations=inline_citations,
+            labels=labels,
+        )
+    )
+
+
+async def run_prompt_async(
+    prompt: str,
+    video_uri: str | None = None,
+    output_schema: types.SchemaUnion | None = None,
+    system_instruction: str | None = None,
+    generation_config: dict[str, Any] = DEFAULT_PARAMETERS,
+    safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
+    model_config: ModelConfig | None = None,
+    use_grounding: bool = False,
+    inline_citations: bool = False,
+    labels: dict[str, str] = {},
+) -> str:
+    """
     Runs a prompt through the model.
 
     Parameters
@@ -405,7 +498,7 @@ def run_prompt(
     merged_labels = DEFAULT_LABELS | labels
     validate_labels(merged_labels)
 
-    response = client.models.generate_content(
+    response = await client.aio.models.generate_content(
         model=model_config.model_name,
         contents=types.Content(role="user", parts=parts),
         config=types.GenerateContentConfig(
