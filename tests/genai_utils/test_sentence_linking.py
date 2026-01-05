@@ -319,3 +319,60 @@ def test_link_quotes_and_sentences(
 ) -> None:
     claimants_per_sentence = link_quotes_and_sentences(quotes, sentences)
     assert claimants_per_sentence == expected
+
+
+@mark.parametrize(
+    "quotes,sentences,threshold,passes",
+    [
+        param(
+            [
+                "I will not seek reelection",
+                "I won't seek reelection",
+                "No reelection for me",
+            ],
+            [
+                "I will not seek reelection",
+            ],
+            70,
+            [True, True, True],
+            id="low threshold",
+        ),
+        param(
+            [
+                "I will not seek reelection",
+                "I won't seek reelection",
+                "No reelection for me",
+            ],
+            [
+                "I will not seek reelection",
+            ],
+            80,
+            [True, True, False],
+            id="mid threshold",
+        ),
+        param(
+            [
+                "I will not seek reelection",
+                "I won't seek reelection",
+                "No reelection for me",
+            ],
+            [
+                "I will not seek reelection",
+            ],
+            100,
+            [True, False, False],
+            id="high threshold",
+        ),
+    ],
+)
+def test_threshold_is_passed_along(
+    quotes: list[str], sentences: list[str], threshold: float, passes: list[bool]
+):
+    linked = link_quotes_and_sentences(quotes, sentences, threshold)
+
+    quotes_matched = [m[0] for m in linked]
+    for i, should_pass in enumerate(passes):
+        if should_pass:
+            assert i in quotes_matched
+        else:
+            assert i not in quotes_matched
