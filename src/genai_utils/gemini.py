@@ -296,6 +296,11 @@ def check_grounding_ran(response: types.GenerateContentResponse) -> bool:
 def get_thinking_config(
     model_name: str, do_thinking: bool
 ) -> types.ThinkingConfig | None:
+    """
+    Gets the thinking cofig required for the current model.
+    Thinking is set differently before and after Gemini 3.0.
+    Certain models like the 2.5 and 3.0 pro models, do not allow grounding to be disabled.
+    """
     if "gemini-2.5-pro" in model_name:
         if not do_thinking:
             _logger.warning(
@@ -304,7 +309,9 @@ def get_thinking_config(
             return types.ThinkingConfig(thinking_budget=128)  # minimum thinking
         return types.ThinkingConfig(thinking_budget=-1)  # dynamic budget
 
-    if model_name <= "gemini-2.5":
+    if (
+        model_name < "gemini-2.6"
+    ):  # there is no 2.6, but this means it will catch all 2.5 variants
         if do_thinking:
             return types.ThinkingConfig(thinking_budget=-1)  # dynamic budget
         return types.ThinkingConfig(thinking_budget=0)  # disable thinking
@@ -319,7 +326,7 @@ def get_thinking_config(
             return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
         return None
 
-    _logger.warning("Did not recognise")
+    _logger.warning("Did not recognise the model provided, defaulting to None")
     return None
 
 
