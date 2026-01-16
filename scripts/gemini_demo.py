@@ -74,3 +74,12 @@ prompt = (
 
 answer_inline_citations = run_prompt(prompt, use_grounding=True, inline_citations=True)
 print("GROUNDING W/ CITATIONS", "\n", "-" * 100, "\n", answer_inline_citations, "\n\n")
+
+# Thinking
+print("THINKING" + "\n" + "-" * 100)
+
+test_prompt = """
+Why is fact checking important?
+""".strip()
+output = run_prompt(test_prompt, do_thinking=True)
+pp(output)

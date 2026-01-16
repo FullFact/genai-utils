@@ -293,6 +293,43 @@ def check_grounding_ran(response: types.GenerateContentResponse) -> bool:
     return bool(n_searches and n_chunks and n_supports)
 
 
+def get_thinking_config(
+    model_name: str, do_thinking: bool
+) -> types.ThinkingConfig | None:
+    """
+    Gets the thinking cofig required for the current model.
+    Thinking is set differently before and after Gemini 3.0.
+    Certain models like the 2.5 and 3.0 pro models, do not allow grounding to be disabled.
+    """
+    if "gemini-2.5-pro" in model_name:
+        if not do_thinking:
+            _logger.warning(
+                "It is not possible to turn off thinking with this model. Setting to minimum."
+            )
+            return types.ThinkingConfig(thinking_budget=128)  # minimum thinking
+        return types.ThinkingConfig(thinking_budget=-1)  # dynamic budget
+
+    if (
+        model_name < "gemini-2.6"
+    ):  # there is no 2.6, but this means it will catch all 2.5 variants
+        if do_thinking:
+            return types.ThinkingConfig(thinking_budget=-1)  # dynamic budget
+        return types.ThinkingConfig(thinking_budget=0)  # disable thinking
+
+    if model_name >= "gemini-3":
+        if not do_thinking:
+            if "pro" in model_name:
+                _logger.warning(
+                    "Cannot disable thinking in this model. Setting thinking to low."
+                )
+                return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
+            return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+        return None
+
+    _logger.warning("Did not recognise the model provided, defaulting to None")
+    return None
+
+
 def run_prompt(
     prompt: str,
     video_uri: str | None = None,
@@ -302,6 +339,7 @@ def run_prompt(
     safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
     model_config: ModelConfig | None = None,
     use_grounding: bool = False,
+    do_thinking: bool = False,
     inline_citations: bool = False,
     labels: dict[str, str] = {},
 ) -> str:
@@ -352,6 +390,10 @@ def run_prompt(
         and makes the output more likely to be factual.
         Does not work with structured output.
         See the docs (`grounding`_).
+    do_thinking: bool
+        Whether Gemini should use a thought process.
+        This is more expensive but may yield better results.
+        Do not use for bulk tasks that don't require complex thoughts.
     inline_citations: bool
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
@@ -379,6 +421,7 @@ def run_prompt(
             safety_settings=safety_settings,
             model_config=model_config,
             use_grounding=use_grounding,
+            do_thinking=do_thinking,
             inline_citations=inline_citations,
             labels=labels,
         )
@@ -394,6 +437,7 @@ async def run_prompt_async(
     safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
     model_config: ModelConfig | None = None,
     use_grounding: bool = False,
+    do_thinking: bool = False,
     inline_citations: bool = False,
     labels: dict[str, str] = {},
 ) -> str:
@@ -444,6 +488,10 @@ async def run_prompt_async(
         and makes the output more likely to be factual.
         Does not work with structured output.
         See the docs (`grounding`_).
+    do_thinking: bool
+        Whether Gemini should use a thought process.
+        This is more expensive but may yield better results.
+        Do not use for bulk tasks that don't require complex thoughts.
     inline_citations: bool
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
@@ -506,6 +554,7 @@ async def run_prompt_async(
             safety_settings=safety_settings,
             **built_gen_config,
             labels=merged_labels,
+            thinking_config=get_thinking_config(model_config.model_name, do_thinking),
         ),
     )
 

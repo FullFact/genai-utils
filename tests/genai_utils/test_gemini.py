@@ -1,16 +1,18 @@
 import os
 from unittest.mock import Mock, patch
 
-from google.genai import Client
+from google.genai import Client, types
 from google.genai.client import AsyncClient
 from google.genai.models import Models
 from pydantic import BaseModel, Field
+from pytest import mark, param
 
 from genai_utils.gemini import (
     DEFAULT_PARAMETERS,
     GeminiError,
     ModelConfig,
     generate_model_config,
+    get_thinking_config,
     run_prompt_async,
 )
 
@@ -143,3 +145,33 @@ async def test_error_if_citations_and_no_grounding(mock_client):
         return
 
     assert False
+
+
+@mark.parametrize(
+    "model_name,do_thinking,expected",
+    [
+        param("gemini-2.0-flash", False, types.ThinkingConfig(thinking_budget=0)),
+        param("gemini-2.0-flash", True, types.ThinkingConfig(thinking_budget=-1)),
+        param("gemini-2.5-flash-lite", False, types.ThinkingConfig(thinking_budget=0)),
+        param("gemini-2.5-flash-lite", True, types.ThinkingConfig(thinking_budget=-1)),
+        param("gemini-2.5-pro", False, types.ThinkingConfig(thinking_budget=128)),
+        param("gemini-2.5-pro", True, types.ThinkingConfig(thinking_budget=-1)),
+        param(
+            "gemini-3.0-flash",
+            False,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
+        ),
+        param("gemini-3.0-flash", True, None),
+        param(
+            "gemini-3.0-pro",
+            False,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+        ),
+        param("gemini-3.0-pro", True, None),
+    ],
+)
+def test_get_thinking_config(
+    model_name: str, do_thinking: bool, expected: types.ThinkingConfig
+):
+    thinking_config = get_thinking_config(model_name, do_thinking)
+    assert thinking_config == expected

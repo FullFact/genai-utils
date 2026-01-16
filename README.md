@@ -110,3 +110,8 @@ prompt = (
 result = run_prompt(prompt, use_grounding=True, inline_citations=True)
 pp(result)
 ```
+
+## Thinking
+
+You can enable or disable thinking in the model by toggling the `do_thinking` parameter.
+Only enable this if the task is complex enough to require it, because it makes things slow and expensive.
