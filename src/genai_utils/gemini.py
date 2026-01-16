@@ -339,6 +339,7 @@ def run_prompt(
     safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
     model_config: ModelConfig | None = None,
     use_grounding: bool = False,
+    do_thinking: bool = False,
     inline_citations: bool = False,
     labels: dict[str, str] = {},
 ) -> str:
@@ -420,6 +421,7 @@ def run_prompt(
             safety_settings=safety_settings,
             model_config=model_config,
             use_grounding=use_grounding,
+            do_thinking=do_thinking,
             inline_citations=inline_citations,
             labels=labels,
         )
