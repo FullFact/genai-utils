@@ -213,50 +213,57 @@ def add_citations(response: types.GenerateContentResponse) -> str:
     return text
 
 
-def validate_labels(labels: dict[str, str]) -> None:
+def validate_labels(labels: dict[str, str]) -> dict[str, str]:
     """
-    Validates labels for GCP requirements.
+    Validates labels for GCP requirements, removing any labels that would cause GCP to
+    return an error.
 
     GCP label requirements:
     - Keys must start with a lowercase letter
     - Keys and values can only contain lowercase letters, numbers, hyphens, and underscores
     - Keys and values must be max 63 characters
     - Keys cannot be empty
-
-    Raises:
-        GeminiError: If labels don't meet GCP requirements
     """
     label_pattern = re.compile(r"^[a-z0-9_-]{1,63}$")
     key_start_pattern = re.compile(r"^[a-z]")
 
+    valid_labels: dict[str, str] = {}
     for key, value in labels.items():
         if not key:
-            raise GeminiError("Label keys cannot be empty")
+            _logger.warning("Label keys cannot be empty")
+            continue
 
         if len(key) > 63:
-            raise GeminiError(
+            _logger.warning(
                 f"Label key '{key}' exceeds 63 characters (length: {len(key)})"
             )
+            continue
 
         if len(value) > 63:
-            raise GeminiError(
+            _logger.warning(
                 f"Label value for key '{key}' exceeds 63 characters (length: {len(value)})"
             )
+            continue
 
         if not key_start_pattern.match(key):
-            raise GeminiError(f"Label key '{key}' must start with a lowercase letter")
+            _logger.warning(f"Label key '{key}' must start with a lowercase letter")
+            continue
 
         if not label_pattern.match(key):
-            raise GeminiError(
+            _logger.warning(
                 f"Label key '{key}' contains invalid characters. "
                 "Only lowercase letters, numbers, hyphens, and underscores are allowed"
             )
+            continue
 
         if not label_pattern.match(value):
-            raise GeminiError(
+            _logger.warning(
                 f"Label value '{value}' for key '{key}' contains invalid characters. "
                 "Only lowercase letters, numbers, hyphens, and underscores are allowed"
             )
+            continue
+        valid_labels[key] = value
+    return valid_labels
 
 
 def check_grounding_ran(response: types.GenerateContentResponse) -> bool:
@@ -543,8 +550,7 @@ async def run_prompt_async(
 
     if inline_citations and not use_grounding:
         raise GeminiError("Inline citations only work if `use_grounding = True`")
-    merged_labels = DEFAULT_LABELS | labels
-    validate_labels(merged_labels)
+    merged_labels = validate_labels(DEFAULT_LABELS | labels)
 
     response = await client.aio.models.generate_content(
         model=model_config.model_name,
