@@ -5,15 +5,17 @@ from google.genai import Client, types
 from google.genai.client import AsyncClient
 from google.genai.models import Models
 from pydantic import BaseModel, Field
-from pytest import mark, param
+from pytest import mark, param, raises
 
 from genai_utils.gemini import (
     DEFAULT_PARAMETERS,
     GeminiError,
     ModelConfig,
+    NoGroundingError,
     generate_model_config,
     get_thinking_config,
     run_prompt_async,
+    validate_labels,
 )
 
 
@@ -147,6 +149,35 @@ async def test_error_if_citations_and_no_grounding(mock_client):
     assert False
 
 
+@patch("genai_utils.gemini.genai.Client")
+async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    async def get_no_grounding_metadata_response():
+        candidate = Mock()
+        candidate.grounding_metadata = None
+        response = Mock()
+        response.candidates = [candidate]
+        response.text = "response!"
+        return response
+
+    models.generate_content.return_value = get_no_grounding_metadata_response()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    with raises(NoGroundingError):
+        await run_prompt_async(
+            "do something",
+            use_grounding=True,
+            model_config=ModelConfig(
+                project="project", location="location", model_name="model"
+            ),
+        )
+
+
 @mark.parametrize(
     "model_name,do_thinking,expected",
     [
@@ -175,3 +206,90 @@ def test_get_thinking_config(
 ):
     thinking_config = get_thinking_config(model_name, do_thinking)
     assert thinking_config == expected
+
+
+# --- validate_labels ---
+
+
+def test_validate_labels_valid():
+    labels = {"valid-key": "valid-value", "another_key": "value-123"}
+    assert validate_labels(labels) == labels
+
+
+@mark.parametrize(
+    "labels",
+    [
+        param({"": "value"}, id="empty-key"),
+        param({"a" * 64: "value"}, id="key-too-long"),
+        param({"key": "a" * 64}, id="value-too-long"),
+        param({"1key": "value"}, id="key-starts-with-digit"),
+        param({"_key": "value"}, id="key-starts-with-underscore"),
+        param({"KEY": "value"}, id="key-uppercase"),
+        param({"key.dots": "value"}, id="key-with-dots"),
+        param({"key": "VALUE"}, id="value-uppercase"),
+        param({"key": "val ue"}, id="value-with-space"),
+    ],
+)
+def test_validate_labels_invalid_input_dropped(labels):
+    assert validate_labels(labels) == {}
+
+
+def test_validate_labels_mixed_keeps_only_valid():
+    labels = {"valid": "ok", "INVALID": "value", "": "empty"}
+    assert validate_labels(labels) == {"valid": "ok"}
+
+
+# --- run_prompt_async happy path ---
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_run_prompt_async_returns_text(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    response = Mock()
+    response.candidates = ["yes!"]
+    response.text = "response!"
+
+    async def get_response():
+        return response
+
+    models.generate_content.return_value = get_response()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    result = await run_prompt_async(
+        "do something",
+        model_config=ModelConfig(
+            project="p", location="l", model_name="gemini-2.0-flash"
+        ),
+    )
+    assert result == "response!"
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_run_prompt_async_raises_when_no_output(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    response = Mock()
+    response.candidates = None
+    response.text = None
+    response.prompt_feedback = "blocked"
+
+    async def get_response():
+        return response
+
+    models.generate_content.return_value = get_response()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    with raises(GeminiError):
+        await run_prompt_async(
+            "do something",
+            model_config=ModelConfig(project="p", location="l", model_name="model"),
+        )

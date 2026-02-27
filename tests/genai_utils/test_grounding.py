@@ -2,9 +2,10 @@ from unittest.mock import Mock, patch
 
 import requests
 from google.genai import types
-from pytest import mark, param
+from pytest import mark, param, raises
 
 from genai_utils.gemini import (
+    GeminiError,
     add_citations,
     check_grounding_ran,
     follow_redirect,
@@ -179,6 +180,12 @@ def test_insert_citation(
         param(types.GenerateContentResponse(candidates=None), False),
         param(
             types.GenerateContentResponse(
+                candidates=[types.Candidate(grounding_metadata=None)]
+            ),
+            False,
+        ),
+        param(
+            types.GenerateContentResponse(
                 candidates=[types.Candidate(grounding_metadata=dummy_grounding)]
             ),
             True,
@@ -194,3 +201,19 @@ def test_insert_citation(
 def test_check_grounding_ran(response: types.GenerateContentResponse, expected: bool):
     did_grounding = check_grounding_ran(response)
     assert did_grounding == expected
+
+
+@mark.parametrize(
+    "candidates,text",
+    [
+        param(None, None, id="no-candidates"),
+        param([Mock()], None, id="no-text"),
+    ],
+)
+def test_add_citations_raises_when_missing_output(candidates, text):
+    response = Mock(types.GenerateContentResponse)
+    response.candidates = candidates
+    response.text = text
+    response.prompt_feedback = "blocked"
+    with raises(GeminiError):
+        add_citations(response)

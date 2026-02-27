@@ -45,9 +45,15 @@ DEFAULT_LABELS = {
 }
 
 
-class GeminiError(Exception):
+class GeminiError(RuntimeError):
     """
     Exception raised when something goes wrong with Gemini.
+    """
+
+
+class NoGroundingError(GeminiError):
+    """
+    Exception raised if grounding doesn't run when asked.
     """
 
 
@@ -564,18 +570,21 @@ async def run_prompt_async(
         ),
     )
 
+    if not (response.candidates and response.text and isinstance(response.text, str)):
+        raise GeminiError(
+            f"No model output: possible reason: {response.prompt_feedback}"
+        )
+
     if use_grounding:
         grounding_ran = check_grounding_ran(response)
         if not grounding_ran:
-            _logger.warning(
+            _logger.error(
                 "Grounding Info: GROUNDING FAILED - see previous log messages for reason"
             )
+            raise NoGroundingError("Grounding did not run")
 
-    if response.candidates and response.text and isinstance(response.text, str):
         if inline_citations and response.candidates[0].grounding_metadata:
             text_with_citations = add_citations(response)
             return text_with_citations
-        else:
-            return response.text
 
-    raise GeminiError(f"No model output: possible reason: {response.prompt_feedback}")
+    return response.text
