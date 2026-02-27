@@ -5,12 +5,13 @@ from google.genai import Client, types
 from google.genai.client import AsyncClient
 from google.genai.models import Models
 from pydantic import BaseModel, Field
-from pytest import mark, param
+from pytest import mark, param, raises
 
 from genai_utils.gemini import (
     DEFAULT_PARAMETERS,
     GeminiError,
     ModelConfig,
+    NoGroundingError,
     generate_model_config,
     get_thinking_config,
     run_prompt_async,
@@ -145,6 +146,35 @@ async def test_error_if_citations_and_no_grounding(mock_client):
         return
 
     assert False
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    async def get_no_grounding_metadata_response():
+        candidate = Mock()
+        candidate.grounding_metadata = None
+        response = Mock()
+        response.candidates = [candidate]
+        response.text = "response!"
+        return response
+
+    models.generate_content.return_value = get_no_grounding_metadata_response()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    with raises(NoGroundingError):
+        await run_prompt_async(
+            "do something",
+            use_grounding=True,
+            model_config=ModelConfig(
+                project="project", location="location", model_name="model"
+            ),
+        )
 
 
 @mark.parametrize(
