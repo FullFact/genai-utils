@@ -1,7 +1,6 @@
 import os
 from unittest.mock import Mock, patch
 
-import requests as req
 from google.genai import Client, types
 from google.genai.client import AsyncClient
 from google.genai.models import Models
@@ -13,12 +12,8 @@ from genai_utils.gemini import (
     GeminiError,
     ModelConfig,
     NoGroundingError,
-    add_citations,
-    check_grounding_ran,
-    follow_redirect,
     generate_model_config,
     get_thinking_config,
-    insert_citation,
     run_prompt_async,
     validate_labels,
 )
@@ -213,47 +208,6 @@ def test_get_thinking_config(
     assert thinking_config == expected
 
 
-# --- follow_redirect ---
-
-
-@patch("genai_utils.gemini.requests.get")
-def test_follow_redirect_success(mock_get):
-    mock_response = Mock()
-    mock_response.url = "https://real-url.com"
-    mock_get.return_value = mock_response
-
-    result = follow_redirect("https://short.url")
-    assert result == "https://real-url.com"
-
-
-@mark.parametrize(
-    "exception",
-    [
-        param(req.exceptions.HTTPError("error"), id="http-error"),
-        param(Exception("something went wrong"), id="generic-exception"),
-    ],
-)
-@patch("genai_utils.gemini.requests.get")
-def test_follow_redirect_error_falls_back(mock_get, exception):
-    mock_get.side_effect = exception
-    assert follow_redirect("https://original.url") == "https://original.url"
-
-
-# --- insert_citation ---
-
-
-@mark.parametrize(
-    "text,citation_idx,expected",
-    [
-        param("Hello world.", 12, "Hello world. (cite)", id="sentence-end"),
-        param("Hello world", 5, "Hello (cite) world", id="whitespace-fallback"),
-        param("Helloworld", 5, "Helloworld (cite)", id="no-whitespace-append"),
-    ],
-)
-def test_insert_citation(text, citation_idx, expected):
-    assert insert_citation(text, "(cite)", citation_idx) == expected
-
-
 # --- validate_labels ---
 
 
@@ -285,99 +239,6 @@ def test_validate_labels_mixed_keeps_only_valid():
     assert validate_labels(labels) == {"valid": "ok"}
 
 
-# --- check_grounding_ran ---
-
-
-def test_check_grounding_ran_no_candidates():
-    response = Mock()
-    response.candidates = []
-    assert check_grounding_ran(response) is False
-
-
-def test_check_grounding_ran_no_grounding_metadata():
-    candidate = Mock()
-    candidate.grounding_metadata = None
-    response = Mock()
-    response.candidates = [candidate]
-    assert check_grounding_ran(response) is False
-
-
-def test_check_grounding_ran_returns_true_when_grounding_present():
-    metadata = Mock()
-    metadata.web_search_queries = ["query"]
-    metadata.grounding_chunks = [Mock()]
-    metadata.grounding_supports = [Mock()]
-    candidate = Mock()
-    candidate.grounding_metadata = metadata
-    response = Mock()
-    response.candidates = [candidate]
-    assert check_grounding_ran(response) is True
-
-
-def test_check_grounding_ran_returns_false_when_no_searches():
-    metadata = Mock()
-    metadata.web_search_queries = []
-    metadata.grounding_chunks = [Mock()]
-    metadata.grounding_supports = [Mock()]
-    candidate = Mock()
-    candidate.grounding_metadata = metadata
-    response = Mock()
-    response.candidates = [candidate]
-    assert check_grounding_ran(response) is False
-
-
-# --- add_citations ---
-
-
-@mark.parametrize(
-    "candidates,text",
-    [
-        param(None, None, id="no-candidates"),
-        param([Mock()], None, id="no-text"),
-    ],
-)
-def test_add_citations_raises_when_missing_output(candidates, text):
-    response = Mock()
-    response.candidates = candidates
-    response.text = text
-    response.prompt_feedback = "blocked"
-    with raises(GeminiError):
-        add_citations(response)
-
-
-def test_add_citations_returns_plain_text_when_no_grounding_metadata():
-    candidate = Mock()
-    candidate.grounding_metadata = None
-    response = Mock()
-    response.candidates = [candidate]
-    response.text = "plain text"
-    assert add_citations(response) == "plain text"
-
-
-def test_add_citations_returns_plain_text_when_no_supports():
-    metadata = Mock()
-    metadata.grounding_supports = None
-    metadata.grounding_chunks = [Mock()]
-    candidate = Mock()
-    candidate.grounding_metadata = metadata
-    response = Mock()
-    response.candidates = [candidate]
-    response.text = "plain text"
-    assert add_citations(response) == "plain text"
-
-
-def test_add_citations_returns_plain_text_when_no_chunks():
-    metadata = Mock()
-    metadata.grounding_supports = [Mock()]
-    metadata.grounding_chunks = None
-    candidate = Mock()
-    candidate.grounding_metadata = metadata
-    response = Mock()
-    response.candidates = [candidate]
-    response.text = "plain text"
-    assert add_citations(response) == "plain text"
-
-
 # --- run_prompt_async happy path ---
 
 
@@ -401,7 +262,9 @@ async def test_run_prompt_async_returns_text(mock_client):
 
     result = await run_prompt_async(
         "do something",
-        model_config=ModelConfig(project="p", location="l", model_name="gemini-2.0-flash"),
+        model_config=ModelConfig(
+            project="p", location="l", model_name="gemini-2.0-flash"
+        ),
     )
     assert result == "response!"
 
