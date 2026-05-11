@@ -10,9 +10,12 @@ Currently it only supports Gemini, but over time it can support other models.
 
 ## Setup
 
-If you don't want to manually specify the config of Gemini, you should set the following environment variables:
-* `GEMINI_PROJECT`: the GCP project you want to use Gemini in, e.g. "my-project"
-* `GEMINI_LOCATION`: the GCP location you want to run Gemini on, e.g. "global"
+This library uses the [Gemini Developer API](https://ai.google.dev/gemini-api/docs).
+
+Authentication is handled by the SDK via an API key:
+* `GEMINI_API_KEY` (or `GOOGLE_API_KEY`): your Gemini API key
+
+If you don't want to manually specify the config of Gemini, you should also set:
 * `GEMINI_MODEL`: the Gemini model you wish to use, e.g. "gemini-2.5-flash-lite"
 
 ## Basic usage
@@ -34,15 +37,17 @@ pp(parsed)
 ## Multimodal
 
 It can also be used to process videos.
-```python
-video = "gs://raphael-test/tiktok/7149378297489558830.mp4"
+`video_uri` accepts any of:
+* A YouTube URL (passed straight to Gemini)
+* A local file path (uploaded via the Files API)
+* A `gs://` GCS URI — downloaded and then uploaded via the Files API
+  (requires the `gcs` extra: `pip install genai-utils[gcs]`)
 
-output = run_prompt("Summarise this video", video_uri=video)
+```python
+output = run_prompt("Summarise this video", video_uri="path/to/video.mp4")
 
 pp(output)
 ```
-
-You can of course swap that uri for another video uri.
 
 ## Structured Output
 

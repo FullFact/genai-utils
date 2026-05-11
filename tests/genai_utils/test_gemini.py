@@ -15,7 +15,6 @@ from genai_utils.gemini import (
     generate_model_config,
     get_thinking_config,
     run_prompt_async,
-    validate_labels,
 )
 
 
@@ -34,31 +33,18 @@ async def get_dummy():
 
 
 def test_generate_model_config():
-    os.environ["GEMINI_PROJECT"] = "p"
-    os.environ["GEMINI_LOCATION"] = "l"
     os.environ["GEMINI_MODEL"] = "m"
 
     config = generate_model_config()
-    assert config.project == "p"
-    assert config.location == "l"
     assert config.model_name == "m"
 
 
 def test_generate_model_config_no_env_vars():
-    if "GEMINI_PROJECT" in os.environ:
-        os.environ.pop("GEMINI_PROJECT")
-    if "GEMINI_LOCATION" in os.environ:
-        os.environ.pop("GEMINI_LOCATION")
     if "GEMINI_MODEL" in os.environ:
         os.environ.pop("GEMINI_MODEL")
 
-    try:
+    with raises(GeminiError):
         _ = generate_model_config()
-    except GeminiError:
-        assert True
-        return
-
-    assert False
 
 
 @patch("genai_utils.gemini.genai.Client")
@@ -77,16 +63,12 @@ async def test_dont_overwrite_generation_config(mock_client):
     await run_prompt_async(
         "do something",
         output_schema=DummySchema,
-        model_config=ModelConfig(
-            project="project", location="location", model_name="model"
-        ),
+        model_config=ModelConfig(model_name="model"),
     )
     models.generate_content.return_value = get_dummy()
     await run_prompt_async(
         "do something",
-        model_config=ModelConfig(
-            project="project", location="location", model_name="model"
-        ),
+        model_config=ModelConfig(model_name="model"),
     )
     assert DEFAULT_PARAMETERS == copy_of_params
 
@@ -106,20 +88,13 @@ async def test_error_if_grounding_with_schema(mock_client):
     async_client.models = models
     mock_client.return_value = client
 
-    try:
+    with raises(GeminiError):
         await run_prompt_async(
             "do something",
             output_schema=DummySchema,
             use_grounding=True,
-            model_config=ModelConfig(
-                project="project", location="location", model_name="model"
-            ),
+            model_config=ModelConfig(model_name="model"),
         )
-    except GeminiError:
-        assert True
-        return
-
-    assert False
 
 
 @patch("genai_utils.gemini.genai.Client")
@@ -133,20 +108,13 @@ async def test_error_if_citations_and_no_grounding(mock_client):
     async_client.models = models
     mock_client.return_value = client
 
-    try:
+    with raises(GeminiError):
         await run_prompt_async(
             "do something",
             use_grounding=False,
             inline_citations=True,
-            model_config=ModelConfig(
-                project="project", location="location", model_name="model"
-            ),
+            model_config=ModelConfig(model_name="model"),
         )
-    except GeminiError:
-        assert True
-        return
-
-    assert False
 
 
 @patch("genai_utils.gemini.genai.Client")
@@ -172,9 +140,7 @@ async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
         await run_prompt_async(
             "do something",
             use_grounding=True,
-            model_config=ModelConfig(
-                project="project", location="location", model_name="model"
-            ),
+            model_config=ModelConfig(model_name="model"),
         )
 
 
@@ -208,42 +174,11 @@ def test_get_thinking_config(
     assert thinking_config == expected
 
 
-# --- validate_labels ---
-
-
-def test_validate_labels_valid():
-    labels = {"valid-key": "valid-value", "another_key": "value-123"}
-    assert validate_labels(labels) == labels
-
-
-@mark.parametrize(
-    "labels",
-    [
-        param({"": "value"}, id="empty-key"),
-        param({"a" * 64: "value"}, id="key-too-long"),
-        param({"key": "a" * 64}, id="value-too-long"),
-        param({"1key": "value"}, id="key-starts-with-digit"),
-        param({"_key": "value"}, id="key-starts-with-underscore"),
-        param({"KEY": "value"}, id="key-uppercase"),
-        param({"key.dots": "value"}, id="key-with-dots"),
-        param({"key": "VALUE"}, id="value-uppercase"),
-        param({"key": "val ue"}, id="value-with-space"),
-    ],
-)
-def test_validate_labels_invalid_input_dropped(labels):
-    assert validate_labels(labels) == {}
-
-
-def test_validate_labels_mixed_keeps_only_valid():
-    labels = {"valid": "ok", "INVALID": "value", "": "empty"}
-    assert validate_labels(labels) == {"valid": "ok"}
-
-
 # --- flex_pricing ---
 
 
 @patch("genai_utils.gemini.genai.Client")
-async def test_flex_pricing_passes_http_options(mock_client):
+async def test_flex_pricing_sets_service_tier_and_timeout(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -256,19 +191,14 @@ async def test_flex_pricing_passes_http_options(mock_client):
     await run_prompt_async(
         "do something",
         flex_pricing=True,
-        model_config=ModelConfig(
-            project="project", location="location", model_name="model"
-        ),
+        model_config=ModelConfig(model_name="model"),
     )
 
-    _, kwargs = mock_client.call_args
-    assert kwargs["http_options"].api_version == "v1"
-    assert (
-        kwargs["http_options"].headers["X-Vertex-AI-LLM-Request-Type"] == "shared"
-    )
-    assert (
-        kwargs["http_options"].headers["X-Vertex-AI-LLM-Shared-Request-Type"] == "flex"
-    )
+    _, client_kwargs = mock_client.call_args
+    assert client_kwargs["http_options"].timeout == 900_000
+
+    call_kwargs = models.generate_content.call_args[1]
+    assert call_kwargs["config"].service_tier == types.ServiceTier.FLEX
 
 
 @patch("genai_utils.gemini.genai.Client")
@@ -284,13 +214,14 @@ async def test_no_flex_pricing_passes_no_http_options(mock_client):
 
     await run_prompt_async(
         "do something",
-        model_config=ModelConfig(
-            project="project", location="location", model_name="model"
-        ),
+        model_config=ModelConfig(model_name="model"),
     )
 
-    _, kwargs = mock_client.call_args
-    assert kwargs["http_options"] is None
+    _, client_kwargs = mock_client.call_args
+    assert client_kwargs["http_options"] is None
+
+    call_kwargs = models.generate_content.call_args[1]
+    assert call_kwargs["config"].service_tier is None
 
 
 # --- run_prompt_async happy path ---
@@ -316,9 +247,7 @@ async def test_run_prompt_async_returns_text(mock_client):
 
     result = await run_prompt_async(
         "do something",
-        model_config=ModelConfig(
-            project="p", location="l", model_name="gemini-2.0-flash"
-        ),
+        model_config=ModelConfig(model_name="gemini-2.0-flash"),
     )
     assert result == "response!"
 
@@ -345,5 +274,86 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
     with raises(GeminiError):
         await run_prompt_async(
             "do something",
-            model_config=ModelConfig(project="p", location="l", model_name="model"),
+            model_config=ModelConfig(model_name="model"),
+        )
+
+
+# --- video URI handling ---
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_video_uri_youtube_passes_through(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+    files = Mock()
+
+    models.generate_content.return_value = get_dummy()
+    client.aio = async_client
+    async_client.models = models
+    async_client.files = files
+    mock_client.return_value = client
+
+    await run_prompt_async(
+        "summarise",
+        video_uri="https://www.youtube.com/watch?v=abc",
+        model_config=ModelConfig(model_name="model"),
+    )
+
+    files.upload.assert_not_called()
+    contents = models.generate_content.call_args[1]["contents"]
+    video_part = contents.parts[0]
+    assert video_part.file_data.file_uri == "https://www.youtube.com/watch?v=abc"
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_video_uri_local_file_uploads(mock_client, tmp_path):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+    files = Mock()
+
+    uploaded = Mock()
+    uploaded.uri = "files/abc"
+    uploaded.mime_type = "video/mp4"
+    uploaded.state = types.FileState.ACTIVE
+    uploaded.name = "files/abc"
+
+    async def upload(file):
+        return uploaded
+
+    files.upload = upload
+
+    models.generate_content.return_value = get_dummy()
+    client.aio = async_client
+    async_client.models = models
+    async_client.files = files
+    mock_client.return_value = client
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"fake video bytes")
+
+    await run_prompt_async(
+        "summarise",
+        video_uri=str(video_path),
+        model_config=ModelConfig(model_name="model"),
+    )
+
+    contents = models.generate_content.call_args[1]["contents"]
+    video_part = contents.parts[0]
+    assert video_part.file_data.file_uri == "files/abc"
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_video_uri_missing_local_file_raises(mock_client):
+    client = Mock(Client)
+    async_client = Mock(AsyncClient)
+    client.aio = async_client
+    mock_client.return_value = client
+
+    with raises(GeminiError):
+        await run_prompt_async(
+            "summarise",
+            video_uri="/nonexistent/path/video.mp4",
+            model_config=ModelConfig(model_name="model"),
         )

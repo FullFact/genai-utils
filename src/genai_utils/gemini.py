@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -38,11 +40,10 @@ DEFAULT_PARAMETERS = {
     "top_p": 1,
 }
 
-DEFAULT_LABELS = {
-    key.removeprefix("GENAI_LABEL_").lower(): value
-    for key, value in os.environ.items()
-    if key.startswith("GENAI_LABEL_")
-}
+YOUTUBE_PATTERN = re.compile(r"^https?://(www\.)?(youtube\.com|youtu\.be)/")
+
+# Flex requests can queue for several minutes, so use a long client timeout.
+FLEX_TIMEOUT_MS = 900_000  # 15 minutes
 
 
 class GeminiError(RuntimeError):
@@ -63,43 +64,24 @@ class ModelConfig(BaseModel):
 
     Attributes:
     -----------
-    project: str
-        The name of the project to run the model in.
-    location: str
-        The Google Cloud location at which to run the model.
-        Different locations are capable of running different models.
-        See `location info`_ in docs.
     model_name: str
         The name of the model you want to use.
-        For example: `gemini-2.0-flash-lite`.
-
-    .. _location info: https://cloud.google.com/vertex-ai/docs/general/locations
+        For example: `gemini-2.5-flash-lite`.
     """
 
-    project: str
-    location: str
     model_name: str
 
 
 def generate_model_config() -> ModelConfig:
     """
-    Generates a new model config from environment variables:
-    `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
+    Generates a new model config from the `GEMINI_MODEL` environment variable.
     """
     try:
-        return ModelConfig(
-            project=os.environ["GEMINI_PROJECT"],
-            location=os.environ["GEMINI_LOCATION"],
-            model_name=os.environ["GEMINI_MODEL"],
-        )
+        return ModelConfig(model_name=os.environ["GEMINI_MODEL"])
     except KeyError as exc:
-        message = (
-            "You need to set the following environment variables: "
-            + "GEMINI_PROJECT, "
-            + "GEMINI_LOCATION, "
-            + "GEMINI_MODEL"
-        )
-        raise GeminiError(message) from exc
+        raise GeminiError(
+            "You need to set the GEMINI_MODEL environment variable."
+        ) from exc
 
 
 def follow_redirect(uri: str) -> str:
@@ -113,13 +95,13 @@ def follow_redirect(uri: str) -> str:
     except requests.exceptions.HTTPError as exc:
         _logger.warning(
             f"The link ({uri}) could not be followed. "
-            "Falling back to vertex AI cached link."
+            "Falling back to the original link."
             f"Details: {repr(exc)}"
         )
     except Exception as exc:
         _logger.warning(
             f"Something went wrong with ({uri}). "
-            "Falling back to vertex AI cached link. "
+            "Falling back to the original link. "
             f"Details: {repr(exc)}"
         )
     return uri
@@ -219,59 +201,6 @@ def add_citations(response: types.GenerateContentResponse) -> str:
     return text
 
 
-def validate_labels(labels: dict[str, str]) -> dict[str, str]:
-    """
-    Validates labels for GCP requirements, removing any labels that would cause GCP to
-    return an error.
-
-    GCP label requirements:
-    - Keys must start with a lowercase letter
-    - Keys and values can only contain lowercase letters, numbers, hyphens, and underscores
-    - Keys and values must be max 63 characters
-    - Keys cannot be empty
-    """
-    label_pattern = re.compile(r"^[a-z0-9_-]{1,63}$")
-    key_start_pattern = re.compile(r"^[a-z]")
-
-    valid_labels: dict[str, str] = {}
-    for key, value in labels.items():
-        if not key:
-            _logger.warning("Label keys cannot be empty")
-            continue
-
-        if len(key) > 63:
-            _logger.warning(
-                f"Label key '{key}' exceeds 63 characters (length: {len(key)})"
-            )
-            continue
-
-        if len(value) > 63:
-            _logger.warning(
-                f"Label value for key '{key}' exceeds 63 characters (length: {len(value)})"
-            )
-            continue
-
-        if not key_start_pattern.match(key):
-            _logger.warning(f"Label key '{key}' must start with a lowercase letter")
-            continue
-
-        if not label_pattern.match(key):
-            _logger.warning(
-                f"Label key '{key}' contains invalid characters. "
-                "Only lowercase letters, numbers, hyphens, and underscores are allowed"
-            )
-            continue
-
-        if not label_pattern.match(value):
-            _logger.warning(
-                f"Label value '{value}' for key '{key}' contains invalid characters. "
-                "Only lowercase letters, numbers, hyphens, and underscores are allowed"
-            )
-            continue
-        valid_labels[key] = value
-    return valid_labels
-
-
 def check_grounding_ran(response: types.GenerateContentResponse) -> bool:
     """
     Checks if grounding ran and logs some metadata about the grounding.
@@ -343,6 +272,70 @@ def get_thinking_config(
     return None
 
 
+async def _prepare_video_part(client: genai.Client, video_uri: str) -> types.Part:
+    """
+    Prepares a video Part for the Gemini API.
+
+    Supported inputs:
+    - YouTube URLs: passed through directly.
+    - `gs://` URIs: downloaded then uploaded via the Files API.
+      Requires `google-cloud-storage` to be installed.
+    - Local file paths: uploaded via the Files API.
+    """
+    if YOUTUBE_PATTERN.match(video_uri):
+        return types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4")
+
+    cleanup_path: str | None = None
+    upload_source: str = video_uri
+
+    if video_uri.startswith("gs://"):
+        try:
+            from google.cloud import storage
+        except ImportError as exc:
+            raise GeminiError(
+                "To use gs:// URIs, install `google-cloud-storage`."
+            ) from exc
+
+        bucket_name, _, blob_path = video_uri[len("gs://") :].partition("/")
+        if not bucket_name or not blob_path:
+            raise GeminiError(f"Invalid gs:// URI: {video_uri}")
+
+        suffix = Path(blob_path).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            cleanup_path = tmp.name
+
+        await asyncio.to_thread(
+            storage.Client().bucket(bucket_name).blob(blob_path).download_to_filename,
+            cleanup_path,
+        )
+        upload_source = cleanup_path
+    elif not os.path.exists(video_uri):
+        raise GeminiError(f"Video file not found: {video_uri}")
+
+    try:
+        uploaded = await client.aio.files.upload(file=upload_source)
+        while (
+            uploaded.state is not None
+            and uploaded.state == types.FileState.PROCESSING
+            and uploaded.name is not None
+        ):
+            await asyncio.sleep(2)
+            uploaded = await client.aio.files.get(name=uploaded.name)
+        if uploaded.state == types.FileState.FAILED:
+            raise GeminiError(f"Video upload failed: {uploaded.name}")
+    finally:
+        if cleanup_path:
+            os.unlink(cleanup_path)
+
+    if not uploaded.uri:
+        raise GeminiError("File upload did not return a URI")
+
+    return types.Part.from_uri(
+        file_uri=uploaded.uri,
+        mime_type=uploaded.mime_type or "video/mp4",
+    )
+
+
 def run_prompt(
     prompt: str,
     video_uri: str | None = None,
@@ -354,7 +347,6 @@ def run_prompt(
     use_grounding: bool = False,
     do_thinking: bool = False,
     inline_citations: bool = False,
-    labels: dict[str, str] = {},
     flex_pricing: bool = False,
 ) -> str:
     """
@@ -365,7 +357,10 @@ def run_prompt(
     prompt: str
         The prompt given to the model
     video_uri: str | None
-        A Google Cloud URI for a video that you want to prompt.
+        A reference to a video to prompt with. May be a YouTube URL,
+        a `gs://` GCS URI, or a local file path.
+        Local files and GCS objects are uploaded via the Files API.
+        GCS uploads require `google-cloud-storage` to be installed.
     output_schema: types.SchemaUnion | None
         A valid schema for the model output.
         Generally, we'd recommend this being a pydantic BaseModel inheriting class,
@@ -395,9 +390,10 @@ def run_prompt(
         See the docs (`safety settings`_)
     model_config: ModelConfig | None
         The config for the Gemini model.
-        Specifies project, location, and model name.
-        If None, will attempt to use environment variables:
-        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
+        Specifies the model name.
+        If None, will attempt to use the `GEMINI_MODEL` environment variable.
+        Authentication is handled by the SDK via the `GEMINI_API_KEY`
+        (or `GOOGLE_API_KEY`) environment variable.
     use_grounding: bool
         Whether Gemini should perform a Google search to ground results.
         This will allow it to pull from up-to-date information,
@@ -412,10 +408,6 @@ def run_prompt(
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
         This is only possible if grounding is set to true.
-    labels: dict[str, str]
-        Optional labels to attach to the API call for tracking and monitoring purposes.
-        Labels are key-value pairs that can be used to organize and filter requests
-        in Google Cloud logs and metrics.
     flex_pricing: bool = False
         Flag saying whether to use flex pricing.
         This means requests will take longer but be cheaper.
@@ -425,8 +417,8 @@ def run_prompt(
     -------
     The text output of the Gemini model.
 
-    .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
-    .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
+    .. _generation config: https://ai.google.dev/api/generate-content#generationconfig
+    .. _safety settings: https://ai.google.dev/gemini-api/docs/safety-settings
     .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
     """
     return asyncio.run(
@@ -441,7 +433,6 @@ def run_prompt(
             use_grounding=use_grounding,
             do_thinking=do_thinking,
             inline_citations=inline_citations,
-            labels=labels,
             flex_pricing=flex_pricing,
         )
     )
@@ -458,7 +449,6 @@ async def run_prompt_async(
     use_grounding: bool = False,
     do_thinking: bool = False,
     inline_citations: bool = False,
-    labels: dict[str, str] = {},
     flex_pricing: bool = False,
 ) -> str:
     """
@@ -469,7 +459,10 @@ async def run_prompt_async(
     prompt: str
         The prompt given to the model
     video_uri: str | None
-        A Google Cloud URI for a video that you want to prompt.
+        A reference to a video to prompt with. May be a YouTube URL,
+        a `gs://` GCS URI, or a local file path.
+        Local files and GCS objects are uploaded via the Files API.
+        GCS uploads require `google-cloud-storage` to be installed.
     output_schema: types.SchemaUnion | None
         A valid schema for the model output.
         Generally, we'd recommend this being a pydantic BaseModel inheriting class,
@@ -499,9 +492,10 @@ async def run_prompt_async(
         See the docs (`safety settings`_)
     model_config: ModelConfig | None
         The config for the Gemini model.
-        Specifies project, location, and model name.
-        If None, will attempt to use environment variables:
-        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
+        Specifies the model name.
+        If None, will attempt to use the `GEMINI_MODEL` environment variable.
+        Authentication is handled by the SDK via the `GEMINI_API_KEY`
+        (or `GOOGLE_API_KEY`) environment variable.
     use_grounding: bool
         Whether Gemini should perform a Google search to ground results.
         This will allow it to pull from up-to-date information,
@@ -516,10 +510,6 @@ async def run_prompt_async(
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
         This is only possible if grounding is set to true.
-    labels: dict[str, str]
-        Optional labels to attach to the API call for tracking and monitoring purposes.
-        Labels are key-value pairs that can be used to organize and filter requests
-        in Google Cloud logs and metrics.
     flex_pricing: bool = False
         Flag saying whether to use flex pricing.
         This means requests will take longer but be cheaper.
@@ -529,8 +519,8 @@ async def run_prompt_async(
     -------
     The text output of the Gemini model.
 
-    .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
-    .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
+    .. _generation config: https://ai.google.dev/api/generate-content#generationconfig
+    .. _safety settings: https://ai.google.dev/gemini-api/docs/safety-settings
     .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
     """
     # make a copy of the generation config so it doesn't change between runs
@@ -538,28 +528,13 @@ async def run_prompt_async(
     if model_config is None:
         model_config = generate_model_config()
 
-    client = genai.Client(
-        vertexai=True,
-        project=model_config.project,
-        location=model_config.location,
-        http_options=(
-            types.HttpOptions(
-                api_version="v1",
-                headers={
-                    "X-Vertex-AI-LLM-Request-Type": "shared",
-                    "X-Vertex-AI-LLM-Shared-Request-Type": "flex",
-                },
-                timeout=300000,  # 5 minute timeout
-            )
-            if flex_pricing
-            else None
-        ),
-    )
+    http_options = types.HttpOptions(timeout=FLEX_TIMEOUT_MS) if flex_pricing else None
+    client = genai.Client(http_options=http_options)
 
     # construct the input, adding the video if provided
     parts = []
     if video_uri:
-        parts.append(types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4"))
+        parts.append(await _prepare_video_part(client, video_uri))
 
     parts.append(types.Part.from_text(text=prompt))
 
@@ -579,7 +554,9 @@ async def run_prompt_async(
 
     if inline_citations and not use_grounding:
         raise GeminiError("Inline citations only work if `use_grounding = True`")
-    merged_labels = validate_labels(DEFAULT_LABELS | labels)
+
+    if flex_pricing:
+        built_gen_config["service_tier"] = types.ServiceTier.FLEX
 
     response = await client.aio.models.generate_content(
         model=model_config.model_name,
@@ -588,7 +565,6 @@ async def run_prompt_async(
             system_instruction=system_instruction,
             safety_settings=safety_settings,
             **built_gen_config,
-            labels=merged_labels,
             thinking_config=get_thinking_config(model_config.model_name, do_thinking),
         ),
     )

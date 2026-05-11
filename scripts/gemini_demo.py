@@ -22,7 +22,9 @@ pp(parsed)
 # Multimodal usage
 print("\n\nMULTIMODEL" + "\n" + "-" * 100)
 
-video = "gs://raphael-test/tiktok/7149378297489558830.mp4"
+# `video_uri` can be a YouTube URL, a local file path, or a `gs://` URI
+# (the latter requires the `gcs` extra to be installed).
+video = "https://www.youtube.com/watch?v=BBJa32lCaaY"
 
 output = run_prompt("Summarise this video", video_uri=video)
 
