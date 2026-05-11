@@ -355,6 +355,7 @@ def run_prompt(
     do_thinking: bool = False,
     inline_citations: bool = False,
     labels: dict[str, str] = {},
+    flex_pricing: bool = False,
 ) -> str:
     """
     A synchronous version of `run_prompt_async`.
@@ -415,6 +416,10 @@ def run_prompt(
         Optional labels to attach to the API call for tracking and monitoring purposes.
         Labels are key-value pairs that can be used to organize and filter requests
         in Google Cloud logs and metrics.
+    flex_pricing: bool = False
+        Flag saying whether to use flex pricing.
+        This means requests will take longer but be cheaper.
+        Default is to not use it to maintain continuity.
 
     Returns
     -------
@@ -437,6 +442,7 @@ def run_prompt(
             do_thinking=do_thinking,
             inline_citations=inline_citations,
             labels=labels,
+            flex_pricing=flex_pricing,
         )
     )
 
@@ -453,6 +459,7 @@ async def run_prompt_async(
     do_thinking: bool = False,
     inline_citations: bool = False,
     labels: dict[str, str] = {},
+    flex_pricing: bool = False,
 ) -> str:
     """
     Runs a prompt through the model.
@@ -513,6 +520,10 @@ async def run_prompt_async(
         Optional labels to attach to the API call for tracking and monitoring purposes.
         Labels are key-value pairs that can be used to organize and filter requests
         in Google Cloud logs and metrics.
+    flex_pricing: bool = False
+        Flag saying whether to use flex pricing.
+        This means requests will take longer but be cheaper.
+        Default is to not use it to maintain continuity.
 
     Returns
     -------
@@ -531,6 +542,18 @@ async def run_prompt_async(
         vertexai=True,
         project=model_config.project,
         location=model_config.location,
+        http_options=(
+            types.HttpOptions(
+                api_version="v1",
+                headers={
+                    "X-Vertex-AI-LLM-Request-Type": "shared",
+                    "X-Vertex-AI-LLM-Shared-Request-Type": "flex",
+                },
+                timeout=300000,  # 5 minute timeout
+            )
+            if flex_pricing
+            else None
+        ),
     )
 
     # construct the input, adding the video if provided

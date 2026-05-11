@@ -14,7 +14,7 @@ test_prompt = """
 Generate a family tree for the Plantagenet monarchs of England. Output should be in correctly formatted json.
 """.strip()
 
-output = run_prompt(test_prompt)
+output = run_prompt(test_prompt, flex_pricing=True)
 parsed = parse_model_json_output(output)
 pp(parsed)
 

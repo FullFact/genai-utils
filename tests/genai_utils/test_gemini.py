@@ -239,6 +239,60 @@ def test_validate_labels_mixed_keeps_only_valid():
     assert validate_labels(labels) == {"valid": "ok"}
 
 
+# --- flex_pricing ---
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_flex_pricing_passes_http_options(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    models.generate_content.return_value = get_dummy()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    await run_prompt_async(
+        "do something",
+        flex_pricing=True,
+        model_config=ModelConfig(
+            project="project", location="location", model_name="model"
+        ),
+    )
+
+    _, kwargs = mock_client.call_args
+    assert kwargs["http_options"].api_version == "v1"
+    assert (
+        kwargs["http_options"].headers["X-Vertex-AI-LLM-Request-Type"] == "shared"
+    )
+    assert (
+        kwargs["http_options"].headers["X-Vertex-AI-LLM-Shared-Request-Type"] == "flex"
+    )
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_no_flex_pricing_passes_no_http_options(mock_client):
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+
+    models.generate_content.return_value = get_dummy()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    await run_prompt_async(
+        "do something",
+        model_config=ModelConfig(
+            project="project", location="location", model_name="model"
+        ),
+    )
+
+    _, kwargs = mock_client.call_args
+    assert kwargs["http_options"] is None
+
+
 # --- run_prompt_async happy path ---
 
 
