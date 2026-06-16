@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import os
 import re
+from functools import lru_cache
 from typing import Any
 
 import requests
@@ -343,6 +343,101 @@ def get_thinking_config(
     return None
 
 
+@lru_cache(maxsize=None)
+def _get_client(project: str, location: str) -> genai.Client:
+    """Return a process-wide Vertex AI client for a project/location pair.
+
+    The client owns HTTP connection pools, so it is built once and reused for
+    every call rather than constructed per request. A fresh client each call is
+    never closed, so its pools accumulate and memory grows steadily under load.
+    google-genai's sync client is safe to share across threads, and the set of
+    distinct (project, location) pairs is tiny, so caching every pair for the
+    process lifetime is bounded."""
+    return genai.Client(vertexai=True, project=project, location=location)
+
+
+def _build_request(
+    prompt: str,
+    video_uri: str | None,
+    output_schema: types.SchemaUnion | None,
+    system_instruction: str | None,
+    generation_config: dict[str, Any],
+    safety_settings: list[types.SafetySetting],
+    model_config: ModelConfig,
+    use_grounding: bool,
+    do_thinking: bool,
+    inline_citations: bool,
+    labels: dict[str, str],
+) -> dict[str, Any]:
+    """Build the keyword arguments for a `models.generate_content` call.
+
+    Shared by the sync and async entry points so they stay in lockstep."""
+    # make a copy of the generation config so it doesn't change between runs
+    built_gen_config = {**generation_config}
+
+    # construct the input, adding the video if provided
+    parts = []
+    if video_uri:
+        parts.append(types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4"))
+    parts.append(types.Part.from_text(text=prompt))
+
+    # define the schema for the output of the model
+    if output_schema:
+        built_gen_config["response_mime_type"] = "application/json"
+        built_gen_config["response_schema"] = output_schema
+
+    # sort out grounding if required
+    if use_grounding:
+        if output_schema:
+            raise GeminiError(
+                "You cannot use structured output and grounding together."
+            )
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
+        built_gen_config["tools"] = [grounding_tool]
+
+    if inline_citations and not use_grounding:
+        raise GeminiError("Inline citations only work if `use_grounding = True`")
+    merged_labels = validate_labels(DEFAULT_LABELS | labels)
+
+    return {
+        "model": model_config.model_name,
+        "contents": types.Content(role="user", parts=parts),
+        "config": types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            safety_settings=safety_settings,
+            **built_gen_config,
+            labels=merged_labels,
+            thinking_config=get_thinking_config(model_config.model_name, do_thinking),
+        ),
+    }
+
+
+def _parse_response(
+    response: types.GenerateContentResponse,
+    use_grounding: bool,
+    inline_citations: bool,
+) -> str:
+    """Validate a generate_content response and return its text."""
+    if not (response.candidates and response.text and isinstance(response.text, str)):
+        raise GeminiError(
+            f"No model output: possible reason: {response.prompt_feedback}"
+        )
+
+    if use_grounding:
+        grounding_ran = check_grounding_ran(response)
+        if not grounding_ran:
+            _logger.error(
+                "Grounding Info: GROUNDING FAILED - see previous log messages for reason"
+            )
+            raise NoGroundingError("Grounding did not run")
+
+        if inline_citations and response.candidates[0].grounding_metadata:
+            text_with_citations = add_citations(response)
+            return text_with_citations
+
+    return response.text
+
+
 def run_prompt(
     prompt: str,
     video_uri: str | None = None,
@@ -424,21 +519,25 @@ def run_prompt(
     .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
     .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
     """
-    return asyncio.run(
-        run_prompt_async(
-            prompt=prompt,
-            video_uri=video_uri,
-            output_schema=output_schema,
-            system_instruction=system_instruction,
-            generation_config=generation_config,
-            safety_settings=safety_settings,
-            model_config=model_config,
-            use_grounding=use_grounding,
-            do_thinking=do_thinking,
-            inline_citations=inline_citations,
-            labels=labels,
-        )
+    if model_config is None:
+        model_config = generate_model_config()
+
+    request = _build_request(
+        prompt,
+        video_uri,
+        output_schema,
+        system_instruction,
+        generation_config,
+        safety_settings,
+        model_config,
+        use_grounding,
+        do_thinking,
+        inline_citations,
+        labels,
     )
+    client = _get_client(model_config.project, model_config.location)
+    response = client.models.generate_content(**request)
+    return _parse_response(response, use_grounding, inline_citations)
 
 
 async def run_prompt_async(
@@ -522,69 +621,35 @@ async def run_prompt_async(
     .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
     .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
     """
-    # make a copy of the generation config so it doesn't change between runs
-    built_gen_config = {**generation_config}
     if model_config is None:
         model_config = generate_model_config()
 
+    request = _build_request(
+        prompt,
+        video_uri,
+        output_schema,
+        system_instruction,
+        generation_config,
+        safety_settings,
+        model_config,
+        use_grounding,
+        do_thinking,
+        inline_citations,
+        labels,
+    )
+
+    # The async transport binds to the running event loop and this is often
+    # invoked under a short-lived loop (asyncio.run), so unlike the sync path we
+    # can't safely share one client across calls. Build one here and close its
+    # async transport so the connection pool isn't leaked.
     client = genai.Client(
         vertexai=True,
         project=model_config.project,
         location=model_config.location,
     )
+    try:
+        response = await client.aio.models.generate_content(**request)
+    finally:
+        await client.aio.aclose()
 
-    # construct the input, adding the video if provided
-    parts = []
-    if video_uri:
-        parts.append(types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4"))
-
-    parts.append(types.Part.from_text(text=prompt))
-
-    # define the schema for the output of the model
-    if output_schema:
-        built_gen_config["response_mime_type"] = "application/json"
-        built_gen_config["response_schema"] = output_schema
-
-    # sort out grounding if required
-    if use_grounding:
-        if output_schema:
-            raise GeminiError(
-                "You cannot use structured output and grounding together."
-            )
-        grounding_tool = types.Tool(google_search=types.GoogleSearch())
-        built_gen_config["tools"] = [grounding_tool]
-
-    if inline_citations and not use_grounding:
-        raise GeminiError("Inline citations only work if `use_grounding = True`")
-    merged_labels = validate_labels(DEFAULT_LABELS | labels)
-
-    response = await client.aio.models.generate_content(
-        model=model_config.model_name,
-        contents=types.Content(role="user", parts=parts),
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            safety_settings=safety_settings,
-            **built_gen_config,
-            labels=merged_labels,
-            thinking_config=get_thinking_config(model_config.model_name, do_thinking),
-        ),
-    )
-
-    if not (response.candidates and response.text and isinstance(response.text, str)):
-        raise GeminiError(
-            f"No model output: possible reason: {response.prompt_feedback}"
-        )
-
-    if use_grounding:
-        grounding_ran = check_grounding_ran(response)
-        if not grounding_ran:
-            _logger.error(
-                "Grounding Info: GROUNDING FAILED - see previous log messages for reason"
-            )
-            raise NoGroundingError("Grounding did not run")
-
-        if inline_citations and response.candidates[0].grounding_metadata:
-            text_with_citations = add_citations(response)
-            return text_with_citations
-
-    return response.text
+    return _parse_response(response, use_grounding, inline_citations)

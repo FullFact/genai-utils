@@ -1,5 +1,5 @@
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from google.genai import Client, types
 from google.genai.client import AsyncClient
@@ -12,8 +12,10 @@ from genai_utils.gemini import (
     GeminiError,
     ModelConfig,
     NoGroundingError,
+    _get_client,
     generate_model_config,
     get_thinking_config,
+    run_prompt,
     run_prompt_async,
     validate_labels,
 )
@@ -67,6 +69,7 @@ async def test_dont_overwrite_generation_config(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     models.generate_content.return_value = get_dummy()
     client.aio = async_client
@@ -100,6 +103,7 @@ async def test_error_if_grounding_with_schema(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     models.generate_content.return_value = get_dummy()
     client.aio = async_client
@@ -127,6 +131,7 @@ async def test_error_if_citations_and_no_grounding(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     models.generate_content.return_value = get_dummy()
     client.aio = async_client
@@ -154,6 +159,7 @@ async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     async def get_no_grounding_metadata_response():
         candidate = Mock()
@@ -247,6 +253,7 @@ async def test_run_prompt_async_returns_text(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     response = Mock()
     response.candidates = ["yes!"]
@@ -274,6 +281,7 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
 
     response = Mock()
     response.candidates = None
@@ -293,3 +301,64 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
             "do something",
             model_config=ModelConfig(project="p", location="l", model_name="model"),
         )
+
+
+# --- client lifecycle (no per-call leak) ---
+
+
+@patch("genai_utils.gemini.genai.Client")
+def test_run_prompt_reuses_cached_client(mock_client):
+    """The sync path builds one client per project/location and reuses it,
+    rather than constructing (and never closing) a fresh client per call."""
+    _get_client.cache_clear()
+    try:
+        client = Mock(Client)
+        models = Mock(Models)
+
+        response = Mock()
+        response.candidates = ["yes!"]
+        response.text = "response!"
+        models.generate_content.return_value = response
+
+        client.models = models
+        mock_client.return_value = client
+
+        config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
+        assert run_prompt("first", model_config=config) == "response!"
+        assert run_prompt("second", model_config=config) == "response!"
+
+        # Constructed once and reused for both calls.
+        assert mock_client.call_count == 1
+        assert models.generate_content.call_count == 2
+    finally:
+        _get_client.cache_clear()
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_run_prompt_async_closes_client(mock_client):
+    """The async path closes the client's async transport so its connection
+    pool isn't leaked: the loop it binds to is often short-lived, so the client
+    can't be cached and reused the way the sync one is."""
+    client = Mock(Client)
+    models = Mock(Models)
+    async_client = Mock(AsyncClient)
+    async_client.aclose = AsyncMock()
+
+    response = Mock()
+    response.candidates = ["yes!"]
+    response.text = "response!"
+
+    async def get_response():
+        return response
+
+    models.generate_content.return_value = get_response()
+    client.aio = async_client
+    async_client.models = models
+    mock_client.return_value = client
+
+    result = await run_prompt_async(
+        "do something",
+        model_config=ModelConfig(project="p", location="l", model_name="model"),
+    )
+    assert result == "response!"
+    async_client.aclose.assert_awaited_once()
