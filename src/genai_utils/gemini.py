@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from functools import lru_cache
 from typing import Any
 
 import requests
@@ -343,19 +342,6 @@ def get_thinking_config(
     return None
 
 
-@lru_cache(maxsize=None)
-def _get_client(project: str, location: str) -> genai.Client:
-    """Return a process-wide Vertex AI client for a project/location pair.
-
-    The client owns HTTP connection pools, so it is built once and reused for
-    every call rather than constructed per request. A fresh client each call is
-    never closed, so its pools accumulate and memory grows steadily under load.
-    google-genai's sync client is safe to share across threads, and the set of
-    distinct (project, location) pairs is tiny, so caching every pair for the
-    process lifetime is bounded."""
-    return genai.Client(vertexai=True, project=project, location=location)
-
-
 def _build_request(
     prompt: str,
     video_uri: str | None,
@@ -535,8 +521,16 @@ def run_prompt(
         inline_citations,
         labels,
     )
-    client = _get_client(model_config.project, model_config.location)
-    response = client.models.generate_content(**request)
+    client = genai.Client(
+        vertexai=True,
+        project=model_config.project,
+        location=model_config.location,
+    )
+    try:
+        response = client.models.generate_content(**request)
+    finally:
+        client.close()
+
     return _parse_response(response, use_grounding, inline_citations)
 
 

@@ -12,7 +12,6 @@ from genai_utils.gemini import (
     GeminiError,
     ModelConfig,
     NoGroundingError,
-    _get_client,
     generate_model_config,
     get_thinking_config,
     run_prompt,
@@ -307,31 +306,24 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
 
 
 @patch("genai_utils.gemini.genai.Client")
-def test_run_prompt_reuses_cached_client(mock_client):
-    """The sync path builds one client per project/location and reuses it,
-    rather than constructing (and never closing) a fresh client per call."""
-    _get_client.cache_clear()
-    try:
-        client = Mock(Client)
-        models = Mock(Models)
+def test_run_prompt_closes_client(mock_client):
+    """The sync path closes the client after each call so its connection pool
+    isn't leaked, mirroring the async path."""
+    client = Mock(Client)
+    models = Mock(Models)
 
-        response = Mock()
-        response.candidates = ["yes!"]
-        response.text = "response!"
-        models.generate_content.return_value = response
+    response = Mock()
+    response.candidates = ["yes!"]
+    response.text = "response!"
+    models.generate_content.return_value = response
 
-        client.models = models
-        mock_client.return_value = client
+    client.models = models
+    mock_client.return_value = client
 
-        config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
-        assert run_prompt("first", model_config=config) == "response!"
-        assert run_prompt("second", model_config=config) == "response!"
+    config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
+    assert run_prompt("do something", model_config=config) == "response!"
 
-        # Constructed once and reused for both calls.
-        assert mock_client.call_count == 1
-        assert models.generate_content.call_count == 2
-    finally:
-        _get_client.cache_clear()
+    client.close.assert_called_once()
 
 
 @patch("genai_utils.gemini.genai.Client")
