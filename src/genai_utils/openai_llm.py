@@ -20,6 +20,9 @@ _logger = logging.getLogger(__name__)
 
 
 def _is_model_loading(exception: BaseException) -> bool:
+    # Servers (vLLM, llama.cpp) return 503 while up but not yet ready to
+    # serve — e.g. still loading the model, or a freshly-started replica.
+    # Retrying rides out that window; stop_after_attempt bounds the wait.
     return (
         isinstance(exception, openai.InternalServerError)
         and exception.status_code == 503
