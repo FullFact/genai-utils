@@ -16,6 +16,9 @@ from tenacity import (
     wait_exponential,
 )
 
+from genai_utils.local_models import NoOutputError
+from genai_utils.local_models.throughput import log_tokens_per_second
+
 _logger = logging.getLogger(__name__)
 
 
@@ -27,47 +30,6 @@ def _is_model_loading(exception: BaseException) -> bool:
         isinstance(exception, openai.InternalServerError)
         and exception.status_code == 503
     )
-
-
-def log_tokens_per_second(response: object, elapsed: float) -> None:
-    """
-    Logs generation throughput (tokens/second) at info level.
-
-    Prefers the server's own decode timing when available (llama.cpp reports a
-    ``timings`` object with ``predicted_per_second``), otherwise falls back to
-    ``completion_tokens`` over the measured wall-clock time, which works for any
-    OpenAI-compatible server such as vLLM.
-    """
-    if not _logger.isEnabledFor(logging.INFO):
-        return
-
-    # llama.cpp: authoritative decode rate from the server, no network overhead.
-    # The openai client stashes unknown response fields on ``model_extra``.
-    extra = getattr(response, "model_extra", None) or {}
-    timings = extra.get("timings") if isinstance(extra, dict) else None
-    if isinstance(timings, dict) and timings.get("predicted_per_second") is not None:
-        _logger.info(
-            "Generation throughput: %.1f tok/s (%d tokens in %.2fs, server timings)",
-            timings["predicted_per_second"],
-            timings.get("predicted_n", 0),
-            timings.get("predicted_ms", 0) / 1000,
-        )
-        return
-
-    # vLLM / generic fallback: completion tokens over wall-clock time.
-    usage = getattr(response, "usage", None)
-    completion_tokens = getattr(usage, "completion_tokens", None)
-    if completion_tokens and elapsed > 0:
-        _logger.info(
-            "Generation throughput: %.1f tok/s (%d completion tokens in %.2fs)",
-            completion_tokens / elapsed,
-            completion_tokens,
-            elapsed,
-        )
-
-
-class NoOutputError(Exception):
-    pass
 
 
 class LLM:
@@ -141,7 +103,7 @@ class LLM:
             ],
             extra_body=extra_model_config,
         )
-        log_tokens_per_second(response, time.perf_counter() - start)
+        log_tokens_per_second(response.model_dump(), time.perf_counter() - start)
         response_text = response.choices[0].message.content
         if response_text is None:
             raise NoOutputError()
