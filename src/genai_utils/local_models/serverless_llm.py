@@ -8,16 +8,28 @@ you ask the autoscaler for a ready worker and it routes the request. The
 ``vastai`` SDK's async ``Serverless`` client handles that for you, so this is an
 async client.
 
+The ``Serverless`` client and the resolved endpoint are built once and reused
+across calls (see :meth:`ServerlessLLM._get_endpoint`). Constructing the client
+downloads vast's root SSL certificate and opens an aiohttp session, and
+resolving the endpoint by name is a control-plane round-trip that lists every
+endpoint on the account — doing all of that per request (the previous
+behaviour) dominated latency when scoring a document one sentence at a time.
+
 Set ``VAST_API_KEY`` in the environment (the SDK reads it; auth is handled by
 vast's routing layer, not by the model itself).
 """
 
+import asyncio
+import logging
 import time
 
 from vastai import Serverless
+from vastai.serverless.client.endpoint import Endpoint_
 
 from genai_utils.local_models import NoOutputError
 from genai_utils.local_models.throughput import log_tokens_per_second
+
+_logger = logging.getLogger(__name__)
 
 
 class ServerlessLLM:
@@ -26,6 +38,10 @@ class ServerlessLLM:
 
     The vast SDK is async, so this is an async client: await
     :meth:`run_message`.
+
+    The underlying ``Serverless`` client and endpoint are created lazily on the
+    first request and reused thereafter. Call :meth:`aclose` on shutdown to
+    release the client's connection pool.
     """
 
     def __init__(
@@ -54,6 +70,48 @@ class ServerlessLLM:
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
+        # Built once on first use and reused across calls (see _get_endpoint).
+        self._client: Serverless | None = None
+        self._endpoint: Endpoint_ | None = None
+        # The vast client's aiohttp session is bound to the event loop it was
+        # created on, so we track that loop and rebuild if it changes.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._init_lock = asyncio.Lock()
+
+    async def _get_endpoint(self) -> Endpoint_:
+        """Return the resolved endpoint, building and caching the ``Serverless``
+        client and endpoint on first use.
+
+        The vast client holds an aiohttp session bound to the event loop it was
+        created on, so if the running loop has changed (e.g. a fresh
+        ``asyncio.run``) the client is rebuilt against the new loop. The endpoint
+        object refreshes its own worker routing over time, so caching it is safe.
+        """
+        loop = asyncio.get_running_loop()
+        if self._client is not None and self._loop is loop:
+            assert self._endpoint is not None
+            return self._endpoint
+
+        async with self._init_lock:
+            # Re-check inside the lock: a concurrent first caller may have built
+            # the client while we were waiting for the lock.
+            if self._client is not None and self._loop is loop:
+                assert self._endpoint is not None
+                return self._endpoint
+
+            if self._client is not None:
+                # The loop changed under us. We can't await-close a session bound
+                # to a now-dead loop, so drop the reference and let it be GC'd.
+                _logger.warning(
+                    "Event loop changed; rebuilding vast Serverless client "
+                    "(old session will be garbage collected)."
+                )
+
+            client = Serverless()
+            self._endpoint = await client.get_endpoint(name=self.endpoint_name)
+            self._client = client
+            self._loop = loop
+            return self._endpoint
 
     async def run_message(self, message_content: str, use_thinking: bool) -> str:
         """
@@ -90,18 +148,16 @@ class ServerlessLLM:
             **extra_model_config,
         }
 
+        endpoint = await self._get_endpoint()
         start = time.perf_counter()
-        async with Serverless() as client:
-            endpoint = await client.get_endpoint(name=self.endpoint_name)
-            # `cost` is the autoscaler's load estimate for this request;
-            # max_tokens is the right proxy since generation length drives GPU
-            # time.
-            resp = await endpoint.request(
-                "/v1/chat/completions",
-                payload,
-                cost=self.max_tokens,
-                stream=False,
-            )
+        # `cost` is the autoscaler's load estimate for this request; max_tokens
+        # is the right proxy since generation length drives GPU time.
+        resp = await endpoint.request(
+            "/v1/chat/completions",
+            payload,
+            cost=self.max_tokens,
+            stream=False,
+        )
 
         response = resp["response"]
         log_tokens_per_second(response, time.perf_counter() - start)
@@ -111,3 +167,15 @@ class ServerlessLLM:
         if response_text is None:
             raise NoOutputError()
         return response_text
+
+    async def aclose(self) -> None:
+        """Close the underlying vast client's connection pool.
+
+        Safe to call more than once. A fresh client is lazily rebuilt if the
+        instance is used again on a live loop.
+        """
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+            self._endpoint = None
+            self._loop = None
