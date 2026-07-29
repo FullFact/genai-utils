@@ -1,3 +1,4 @@
+import asyncio
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,7 +13,10 @@ from genai_utils.gemini import (
     GeminiError,
     ModelConfig,
     NoGroundingError,
+    aclose_clients,
+    close_clients,
     generate_model_config,
+    get_async_client,
     get_thinking_config,
     run_prompt,
     run_prompt_async,
@@ -302,35 +306,70 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
         )
 
 
-# --- client lifecycle (no per-call leak) ---
+# --- client reuse (one client per project/location, not per prompt) ---
 
 
-@patch("genai_utils.gemini.genai.Client")
-def test_run_prompt_closes_client(mock_client):
-    """The sync path closes the client after each call so its connection pool
-    isn't leaked, mirroring the async path."""
+def _sync_mock_client():
     client = Mock(Client)
     models = Mock(Models)
-
     response = Mock()
     response.candidates = ["yes!"]
     response.text = "response!"
     models.generate_content.return_value = response
-
     client.models = models
-    mock_client.return_value = client
-
-    config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
-    assert run_prompt("do something", model_config=config) == "response!"
-
-    client.close.assert_called_once()
+    return client
 
 
 @patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_async_closes_client(mock_client):
-    """The async path closes the client's async transport so its connection
-    pool isn't leaked: the loop it binds to is often short-lived, so the client
-    can't be cached and reused the way the sync one is."""
+def test_run_prompt_reuses_one_client(mock_client):
+    """Building a client resolves credentials and holds native memory, so the
+    sync path must build one per project/location, not one per prompt."""
+    mock_client.return_value = _sync_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
+
+    assert run_prompt("do something", model_config=config) == "response!"
+    assert run_prompt("do something else", model_config=config) == "response!"
+
+    mock_client.assert_called_once()
+    mock_client.return_value.close.assert_not_called()
+
+
+@patch("genai_utils.gemini.genai.Client")
+def test_run_prompt_builds_a_client_per_project_and_location(mock_client):
+    mock_client.return_value = _sync_mock_client()
+
+    run_prompt(
+        "do something",
+        model_config=ModelConfig(project="p", location="l", model_name="model"),
+    )
+    run_prompt(
+        "do something",
+        model_config=ModelConfig(project="p", location="other", model_name="model"),
+    )
+    # A different model on an existing project/location reuses its client.
+    run_prompt(
+        "do something",
+        model_config=ModelConfig(project="p", location="l", model_name="other-model"),
+    )
+
+    assert mock_client.call_count == 2
+
+
+@patch("genai_utils.gemini.genai.Client")
+def test_close_clients_closes_and_forgets_them(mock_client):
+    mock_client.return_value = _sync_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    run_prompt("do something", model_config=config)
+    close_clients()
+
+    mock_client.return_value.close.assert_called_once()
+    # Forgotten as well as closed, so the next call builds a fresh one.
+    run_prompt("do something", model_config=config)
+    assert mock_client.call_count == 2
+
+
+def _async_mock_client():
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -343,14 +382,67 @@ async def test_run_prompt_async_closes_client(mock_client):
     async def get_response():
         return response
 
-    models.generate_content.return_value = get_response()
+    # A new coroutine per call, since a coroutine can only be awaited once.
+    models.generate_content.side_effect = lambda **_: get_response()
     client.aio = async_client
     async_client.models = models
-    mock_client.return_value = client
+    return client
 
-    result = await run_prompt_async(
-        "do something",
-        model_config=ModelConfig(project="p", location="l", model_name="model"),
-    )
-    assert result == "response!"
-    async_client.aclose.assert_awaited_once()
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_run_prompt_async_reuses_one_client_per_loop(mock_client):
+    mock_client.return_value = _async_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    assert await run_prompt_async("do something", model_config=config) == "response!"
+    assert await run_prompt_async("and again", model_config=config) == "response!"
+
+    mock_client.assert_called_once()
+    # The transport stays open for the next prompt on this loop.
+    mock_client.return_value.aio.aclose.assert_not_awaited()
+
+
+@patch("genai_utils.gemini.genai.Client")
+def test_async_clients_are_not_shared_between_loops(mock_client):
+    """The async transport binds to the loop it is first used on, so a client
+    cannot outlive its loop -- a caller using `asyncio.run` per batch gets one
+    client per batch rather than one per prompt."""
+    mock_client.return_value = _async_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    async def two_prompts():
+        await run_prompt_async("one", model_config=config)
+        await run_prompt_async("two", model_config=config)
+
+    asyncio.run(two_prompts())
+    asyncio.run(two_prompts())
+
+    assert mock_client.call_count == 2
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_aclose_clients_closes_this_loops_clients(mock_client):
+    mock_client.return_value = _async_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    await run_prompt_async("do something", model_config=config)
+    await aclose_clients()
+
+    mock_client.return_value.aio.aclose.assert_awaited_once()
+    await run_prompt_async("do something", model_config=config)
+    assert mock_client.call_count == 2
+
+
+@patch("genai_utils.gemini.genai.Client")
+async def test_get_async_client_returns_the_same_client_within_a_loop(mock_client):
+    mock_client.return_value = _async_mock_client()
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    assert get_async_client(config) is get_async_client(config)
+
+
+def test_get_async_client_needs_a_running_loop():
+    config = ModelConfig(project="p", location="l", model_name="model")
+
+    with raises(RuntimeError):
+        get_async_client(config)

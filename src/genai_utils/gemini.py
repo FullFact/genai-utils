@@ -1,7 +1,10 @@
+import asyncio
 import logging
 import os
 import re
-from typing import Any
+import threading
+import weakref
+from typing import Any, MutableMapping
 
 import requests
 from google import genai
@@ -78,6 +81,103 @@ class ModelConfig(BaseModel):
     project: str
     location: str
     model_name: str
+
+
+# Clients are shared rather than built per prompt. Constructing one resolves
+# credentials and sets up a transport, which is wasted work when a caller scores
+# a document a sentence at a time -- and each live client also holds native
+# (grpc/auth) memory that closing does not return to the OS, so a client per call
+# reads as a memory leak in a long-running service.
+#
+# A client is keyed by the project and location it was built for, since those are
+# the only construction arguments; the model name is per request.
+_ClientKey = tuple[str, str]
+
+# The sync client is safe to share across threads.
+_sync_clients: dict[_ClientKey, genai.Client] = {}
+_sync_clients_lock = threading.Lock()
+
+# The async transport binds to the event loop it is first used on, so async
+# clients are cached per loop. The mapping holds the loop weakly: when a loop is
+# finished with (e.g. a caller using `asyncio.run` per batch) its entry drops out
+# on its own. Each loop runs in a single thread and the lookup below never awaits,
+# so no lock is needed here.
+_async_clients: MutableMapping[
+    asyncio.AbstractEventLoop, dict[_ClientKey, genai.Client]
+]
+_async_clients = weakref.WeakKeyDictionary()
+
+
+def _build_client(model_config: ModelConfig) -> genai.Client:
+    return genai.Client(
+        vertexai=True,
+        project=model_config.project,
+        location=model_config.location,
+    )
+
+
+def get_client(model_config: ModelConfig) -> genai.Client:
+    """
+    Returns the shared sync client for this project and location, building it on
+    first use.
+    """
+    key = (model_config.project, model_config.location)
+    client = _sync_clients.get(key)
+    if client is not None:
+        return client
+
+    with _sync_clients_lock:
+        # Re-check inside the lock: another thread may have built it while we
+        # waited.
+        client = _sync_clients.get(key)
+        if client is None:
+            client = _build_client(model_config)
+            _sync_clients[key] = client
+        return client
+
+
+def get_async_client(model_config: ModelConfig) -> genai.Client:
+    """
+    Returns the shared client for this project, location and running event loop,
+    building it on first use.
+
+    Must be called from within a running loop, since the loop is part of the
+    identity of the client (its async transport is bound to it).
+    """
+    loop = asyncio.get_running_loop()
+    key = (model_config.project, model_config.location)
+    for_loop = _async_clients.setdefault(loop, {})
+    client = for_loop.get(key)
+    if client is None:
+        client = _build_client(model_config)
+        for_loop[key] = client
+    return client
+
+
+def close_clients() -> None:
+    """
+    Closes and forgets every shared sync client.
+
+    Long-running services don't need this -- the clients are meant to live as long
+    as the process. It's here for shutdown hooks, for tests, and for when
+    credentials or config change under you.
+    """
+    with _sync_clients_lock:
+        for client in _sync_clients.values():
+            client.close()
+        _sync_clients.clear()
+
+
+async def aclose_clients() -> None:
+    """
+    Closes and forgets the shared async clients belonging to the running loop.
+
+    Call this before abandoning a loop if you want its connections closed
+    deterministically rather than at garbage collection.
+    """
+    loop = asyncio.get_running_loop()
+    for client in _async_clients.pop(loop, {}).values():
+        await client.aio.aclose()
 
 
 def generate_model_config() -> ModelConfig:
@@ -521,15 +621,8 @@ def run_prompt(
         inline_citations,
         labels,
     )
-    client = genai.Client(
-        vertexai=True,
-        project=model_config.project,
-        location=model_config.location,
-    )
-    try:
-        response = client.models.generate_content(**request)
-    finally:
-        client.close()
+    client = get_client(model_config)
+    response = client.models.generate_content(**request)
 
     return _parse_response(response, use_grounding, inline_citations)
 
@@ -632,18 +725,10 @@ async def run_prompt_async(
         labels,
     )
 
-    # The async transport binds to the running event loop and this is often
-    # invoked under a short-lived loop (asyncio.run), so unlike the sync path we
-    # can't safely share one client across calls. Build one here and close its
-    # async transport so the connection pool isn't leaked.
-    client = genai.Client(
-        vertexai=True,
-        project=model_config.project,
-        location=model_config.location,
-    )
-    try:
-        response = await client.aio.models.generate_content(**request)
-    finally:
-        await client.aio.aclose()
+    # Shared per event loop, since the async transport binds to the loop it is
+    # first used on. A caller that runs many prompts under one loop -- gathering a
+    # prompt per sentence, say -- now builds one client instead of one per prompt.
+    client = get_async_client(model_config)
+    response = await client.aio.models.generate_content(**request)
 
     return _parse_response(response, use_grounding, inline_citations)
