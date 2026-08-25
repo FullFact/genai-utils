@@ -330,7 +330,10 @@ def get_thinking_config(
 
     if model_name >= "gemini-3":
         if not do_thinking:
-            if "pro" in model_name:
+            # Pro models cannot disable thinking, and 3.7+ flash models
+            # reject MINIMAL ("Thinking level is unsupported"); LOW is the
+            # lowest level either accepts.
+            if "pro" in model_name or model_name >= "gemini-3.7":
                 _logger.warning(
                     "Cannot disable thinking in this model. Setting thinking to low."
                 )
