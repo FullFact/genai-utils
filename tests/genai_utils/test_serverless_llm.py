@@ -3,7 +3,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from genai_utils.local_models.serverless_llm import NoOutputError, ServerlessLLM
+from genai_utils.local_models.serverless_llm import (
+    DEFAULT_REQUEST_TIMEOUT,
+    NoOutputError,
+    ServerlessLLM,
+)
 
 
 def _fake_serverless(response_dict):
@@ -114,3 +118,25 @@ async def test_aclose_is_a_noop_before_any_call() -> None:
     llm = ServerlessLLM(endpoint_name="ep")
     # Should not raise even though no client was ever built.
     await llm.aclose()
+
+
+async def test_request_carries_a_time_budget() -> None:
+    """Without a timeout the SDK's retry loop skips its own time checks and
+    retries forever, billing GPU time on every attempt."""
+    serverless, request, _ = _fake_serverless(_completion("hi"))
+    llm = ServerlessLLM(endpoint_name="ep")
+
+    with patch("genai_utils.local_models.serverless_llm.Serverless", serverless):
+        await llm.run_message("hello", use_thinking=False)
+
+    assert request.await_args.kwargs["timeout"] == DEFAULT_REQUEST_TIMEOUT
+
+
+async def test_request_timeout_is_configurable() -> None:
+    serverless, request, _ = _fake_serverless(_completion("hi"))
+    llm = ServerlessLLM(endpoint_name="ep", request_timeout=42.0)
+
+    with patch("genai_utils.local_models.serverless_llm.Serverless", serverless):
+        await llm.run_message("hello", use_thinking=False)
+
+    assert request.await_args.kwargs["timeout"] == 42.0

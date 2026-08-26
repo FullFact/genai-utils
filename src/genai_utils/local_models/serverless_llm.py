@@ -17,6 +17,9 @@ behaviour) dominated latency when scoring a document one sentence at a time.
 
 Set ``VAST_API_KEY`` in the environment (the SDK reads it; auth is handled by
 vast's routing layer, not by the model itself).
+
+Every request carries a total time budget (``request_timeout``); without one
+the SDK's own retry loop is unbounded. See :data:`DEFAULT_REQUEST_TIMEOUT`.
 """
 
 import asyncio
@@ -30,6 +33,19 @@ from genai_utils.local_models import NoOutputError
 from genai_utils.local_models.throughput import log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
+
+# Total seconds one request may spend being routed, queued and retried.
+#
+# This must be set. The SDK retries a failing request by default, and every
+# time-budget check inside that loop is guarded on the timeout being non-None —
+# so passing nothing (the previous behaviour) means a persistently failing
+# request retries forever, each attempt billing GPU time.
+#
+# 300s is generous for a served request (a warm worker answers a long
+# generation in seconds) while still bounding the pathological case. It does
+# not cover waking a *cold* worker, which can take minutes: keep workers warm,
+# or raise this for a caller that knowingly hits a cold endpoint.
+DEFAULT_REQUEST_TIMEOUT = 300.0
 
 
 class ServerlessLLM:
@@ -50,6 +66,7 @@ class ServerlessLLM:
         model_name: str = "local-model",
         max_tokens: int = 512,
         temperature: float = 0.7,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ):
         """
         Args:
@@ -65,11 +82,16 @@ class ServerlessLLM:
                 drives GPU time.
             temperature:
                 Default sampling temperature.
+            request_timeout:
+                Total seconds a request may spend being routed, queued and
+                retried before :class:`asyncio.TimeoutError` is raised. See
+                :data:`DEFAULT_REQUEST_TIMEOUT` for why this must not be None.
         """
         self.endpoint_name = endpoint_name
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.request_timeout = request_timeout
         # Built once on first use and reused across calls (see _get_endpoint).
         self._client: Serverless | None = None
         self._endpoint: Endpoint_ | None = None
@@ -119,7 +141,10 @@ class ServerlessLLM:
         Will use thinking if you ask it to.
 
         The autoscaler waits for a ready worker before routing, so — unlike the
-        direct client — there's no "model loading" (503) retry to ride out here.
+        direct client — there's no "model loading" (503) retry to ride out
+        here. The SDK does retry routing and connection failures internally;
+        ``request_timeout`` is what bounds that loop, and exhausting it raises
+        :class:`asyncio.TimeoutError`.
         """
         extra_model_config = (
             {
@@ -157,6 +182,7 @@ class ServerlessLLM:
             payload,
             cost=self.max_tokens,
             stream=False,
+            timeout=self.request_timeout,
         )
 
         response = resp["response"]
