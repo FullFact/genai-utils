@@ -173,9 +173,11 @@ class ServerlessLLM:
         start = time.perf_counter()
         # `cost` is the autoscaler's load estimate for this request; max_tokens
         # is the right proxy since generation length drives GPU time.
-        # Both: the SDK's budget lets it give up cleanly between retries, and
-        # wait_for is the ceiling that also covers a worker call already in
-        # flight, which the SDK's own checks never interrupt.
+        #
+        # The timeout is passed twice on purpose. The SDK's own budget lets it
+        # give up cleanly between retries; wait_for is the outer ceiling, and is
+        # what covers a worker call already in flight, since the SDK only checks
+        # its budget between attempts.
         resp = await asyncio.wait_for(
             endpoint.request(
                 "/v1/chat/completions",
