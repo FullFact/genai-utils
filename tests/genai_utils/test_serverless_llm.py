@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -140,3 +141,19 @@ async def test_request_timeout_is_configurable() -> None:
         await llm.run_message("hello", use_thinking=False)
 
     assert request.await_args.kwargs["timeout"] == 42.0
+
+
+async def test_request_timeout_is_enforced_not_just_passed() -> None:
+    """The SDK checks its own budget between retries, never during a worker
+    call, so the ceiling has to be applied from outside as well."""
+    serverless, request, _ = _fake_serverless(_completion("hi"))
+
+    async def never_returns(*_args, **_kwargs):
+        await asyncio.sleep(60)
+
+    request.side_effect = never_returns
+    llm = ServerlessLLM(endpoint_name="ep", request_timeout=0.01)
+
+    with patch("genai_utils.local_models.serverless_llm.Serverless", serverless):
+        with pytest.raises(asyncio.TimeoutError):
+            await llm.run_message("hello", use_thinking=False)
