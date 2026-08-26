@@ -204,6 +204,12 @@ async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
             types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
         ),
         param("gemini-3.0-pro", True, None),
+        param(
+            "gemini-3.7-flash",
+            False,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+        ),
+        param("gemini-3.7-flash", True, None),
     ],
 )
 def test_get_thinking_config(
