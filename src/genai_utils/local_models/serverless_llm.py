@@ -31,6 +31,19 @@ from genai_utils.local_models.throughput import log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
 
+# Total seconds a request may take, start to finish.
+#
+# The SDK retries by default, and every time check inside that loop is guarded
+# on this being non-None — so passing nothing retries forever, billing GPU time
+# on each attempt. Its own checks run between attempts and while polling for a
+# worker, never during the worker call itself, which has a separate 600s budget
+# we cannot reach through ``request``. So this is enforced from the outside too
+# (see :meth:`ServerlessLLM.run_message`), making it a real ceiling.
+#
+# 300s is generous for a request a warm worker serves. It does not cover waking
+# a cold worker, which takes minutes: keep workers warm, or raise it.
+DEFAULT_REQUEST_TIMEOUT = 300.0
+
 
 class ServerlessLLM:
     """
@@ -50,6 +63,7 @@ class ServerlessLLM:
         model_name: str = "local-model",
         max_tokens: int = 512,
         temperature: float = 0.7,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ):
         """
         Args:
@@ -65,11 +79,15 @@ class ServerlessLLM:
                 drives GPU time.
             temperature:
                 Default sampling temperature.
+            request_timeout:
+                Total seconds for the whole call: routing, queueing, retries
+                and generation. See :data:`DEFAULT_REQUEST_TIMEOUT`.
         """
         self.endpoint_name = endpoint_name
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.request_timeout = request_timeout
         # Built once on first use and reused across calls (see _get_endpoint).
         self._client: Serverless | None = None
         self._endpoint: Endpoint_ | None = None
@@ -119,7 +137,10 @@ class ServerlessLLM:
         Will use thinking if you ask it to.
 
         The autoscaler waits for a ready worker before routing, so — unlike the
-        direct client — there's no "model loading" (503) retry to ride out here.
+        direct client — there's no "model loading" (503) retry to ride out
+        here. The SDK does retry routing and connection failures;
+        ``request_timeout`` bounds the whole call and raises
+        :class:`asyncio.TimeoutError` when spent.
         """
         extra_model_config = (
             {
@@ -152,11 +173,20 @@ class ServerlessLLM:
         start = time.perf_counter()
         # `cost` is the autoscaler's load estimate for this request; max_tokens
         # is the right proxy since generation length drives GPU time.
-        resp = await endpoint.request(
-            "/v1/chat/completions",
-            payload,
-            cost=self.max_tokens,
-            stream=False,
+        #
+        # The timeout is passed twice on purpose. The SDK's own budget lets it
+        # give up cleanly between retries; wait_for is the outer ceiling, and is
+        # what covers a worker call already in flight, since the SDK only checks
+        # its budget between attempts.
+        resp = await asyncio.wait_for(
+            endpoint.request(
+                "/v1/chat/completions",
+                payload,
+                cost=self.max_tokens,
+                stream=False,
+                timeout=self.request_timeout,
+            ),
+            timeout=self.request_timeout,
         )
 
         response = resp["response"]
