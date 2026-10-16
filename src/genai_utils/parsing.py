@@ -15,13 +15,13 @@ if __name__ == "__main__":
     import json
     from pprint import pp
 
-    from genai_utils.gemini import run_prompt
+    from genai_utils.llm.gemini import GeminiChat
 
     test_prompt = """
     Generate a family tree for the Plantagenet monarchs of England. Output should be in correctly formatted json.
     """.strip()
 
-    output = run_prompt(test_prompt)
+    output = GeminiChat().run_message_sync(test_prompt, use_thinking=False)
     print(f"Model output: {json.dumps(output)[:100]}")
 
     parsed = parse_model_json_output(output)

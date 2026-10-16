@@ -7,15 +7,15 @@ from google.genai.models import Models
 from pydantic import BaseModel, Field
 from pytest import mark, param, raises
 
-from genai_utils.gemini import (
+from genai_utils.llm import NoOutputError
+from genai_utils.llm.gemini import (
     DEFAULT_PARAMETERS,
+    GeminiChat,
     GeminiError,
     ModelConfig,
     NoGroundingError,
     generate_model_config,
     get_thinking_config,
-    run_prompt,
-    run_prompt_async,
     validate_labels,
 )
 
@@ -62,7 +62,7 @@ def test_generate_model_config_no_env_vars():
     assert False
 
 
-@patch("genai_utils.gemini.genai.Client")
+@patch("genai_utils.llm.gemini.genai.Client")
 async def test_dont_overwrite_generation_config(mock_client):
     copy_of_params = {**DEFAULT_PARAMETERS}
     client = Mock(Client)
@@ -76,20 +76,18 @@ async def test_dont_overwrite_generation_config(mock_client):
     mock_client.return_value = client
 
     assert DEFAULT_PARAMETERS == copy_of_params
-    await run_prompt_async(
-        "do something",
+    await GeminiChat(
         output_schema=DummySchema,
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
         ),
-    )
+    ).run_message("do something", use_thinking=False)
     models.generate_content.return_value = get_dummy()
-    await run_prompt_async(
-        "do something",
+    await GeminiChat(
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
         ),
-    )
+    ).run_message("do something", use_thinking=False)
     assert DEFAULT_PARAMETERS == copy_of_params
 
     call_args = models.generate_content.call_args_list
@@ -97,7 +95,7 @@ async def test_dont_overwrite_generation_config(mock_client):
     assert call_args[1][1]["config"].response_mime_type is None
 
 
-@patch("genai_utils.gemini.genai.Client")
+@patch("genai_utils.llm.gemini.genai.Client")
 async def test_error_if_grounding_with_schema(mock_client):
     client = Mock(Client)
     models = Mock(Models)
@@ -110,14 +108,13 @@ async def test_error_if_grounding_with_schema(mock_client):
     mock_client.return_value = client
 
     try:
-        await run_prompt_async(
-            "do something",
+        await GeminiChat(
             output_schema=DummySchema,
             use_grounding=True,
             model_config=ModelConfig(
                 project="project", location="location", model_name="model"
             ),
-        )
+        ).run_message("do something", use_thinking=False)
     except GeminiError:
         assert True
         return
@@ -125,7 +122,7 @@ async def test_error_if_grounding_with_schema(mock_client):
     assert False
 
 
-@patch("genai_utils.gemini.genai.Client")
+@patch("genai_utils.llm.gemini.genai.Client")
 async def test_error_if_citations_and_no_grounding(mock_client):
     client = Mock(Client)
     models = Mock(Models)
@@ -138,14 +135,13 @@ async def test_error_if_citations_and_no_grounding(mock_client):
     mock_client.return_value = client
 
     try:
-        await run_prompt_async(
-            "do something",
+        await GeminiChat(
             use_grounding=False,
             inline_citations=True,
             model_config=ModelConfig(
                 project="project", location="location", model_name="model"
             ),
-        )
+        ).run_message("do something", use_thinking=False)
     except GeminiError:
         assert True
         return
@@ -153,7 +149,7 @@ async def test_error_if_citations_and_no_grounding(mock_client):
     assert False
 
 
-@patch("genai_utils.gemini.genai.Client")
+@patch("genai_utils.llm.gemini.genai.Client")
 async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
     client = Mock(Client)
     models = Mock(Models)
@@ -174,13 +170,12 @@ async def test_no_grounding_error_when_grounding_does_not_run(mock_client):
     mock_client.return_value = client
 
     with raises(NoGroundingError):
-        await run_prompt_async(
-            "do something",
+        await GeminiChat(
             use_grounding=True,
             model_config=ModelConfig(
                 project="project", location="location", model_name="model"
             ),
-        )
+        ).run_message("do something", use_thinking=False)
 
 
 @mark.parametrize(
@@ -250,11 +245,11 @@ def test_validate_labels_mixed_keeps_only_valid():
     assert validate_labels(labels) == {"valid": "ok"}
 
 
-# --- run_prompt_async happy path ---
+# --- run_message happy path ---
 
 
-@patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_async_returns_text(mock_client):
+@patch("genai_utils.llm.gemini.genai.Client")
+async def test_run_message_returns_text(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -272,17 +267,16 @@ async def test_run_prompt_async_returns_text(mock_client):
     async_client.models = models
     mock_client.return_value = client
 
-    result = await run_prompt_async(
-        "do something",
+    result = await GeminiChat(
         model_config=ModelConfig(
             project="p", location="l", model_name="gemini-2.0-flash"
         ),
-    )
+    ).run_message("do something", use_thinking=False)
     assert result == "response!"
 
 
-@patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_async_raises_when_no_output(mock_client):
+@patch("genai_utils.llm.gemini.genai.Client")
+async def test_run_message_raises_when_no_output(mock_client):
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -301,18 +295,17 @@ async def test_run_prompt_async_raises_when_no_output(mock_client):
     async_client.models = models
     mock_client.return_value = client
 
-    with raises(GeminiError):
-        await run_prompt_async(
-            "do something",
+    with raises(NoOutputError):
+        await GeminiChat(
             model_config=ModelConfig(project="p", location="l", model_name="model"),
-        )
+        ).run_message("do something", use_thinking=False)
 
 
 # --- client lifecycle (no per-call leak) ---
 
 
-@patch("genai_utils.gemini.genai.Client")
-def test_run_prompt_closes_client(mock_client):
+@patch("genai_utils.llm.gemini.genai.Client")
+def test_run_message_sync_closes_client(mock_client):
     """The sync path closes the client after each call so its connection pool
     isn't leaked, mirroring the async path."""
     client = Mock(Client)
@@ -327,13 +320,14 @@ def test_run_prompt_closes_client(mock_client):
     mock_client.return_value = client
 
     config = ModelConfig(project="p", location="l", model_name="gemini-2.0-flash")
-    assert run_prompt("do something", model_config=config) == "response!"
+    model = GeminiChat(model_config=config)
+    assert model.run_message_sync("do something", use_thinking=False) == "response!"
 
     client.close.assert_called_once()
 
 
-@patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_async_closes_client(mock_client):
+@patch("genai_utils.llm.gemini.genai.Client")
+async def test_run_message_closes_client(mock_client):
     """The async path closes the client's async transport so its connection
     pool isn't leaked: the loop it binds to is often short-lived, so the client
     can't be cached and reused the way the sync one is."""
@@ -354,9 +348,8 @@ async def test_run_prompt_async_closes_client(mock_client):
     async_client.models = models
     mock_client.return_value = client
 
-    result = await run_prompt_async(
-        "do something",
+    result = await GeminiChat(
         model_config=ModelConfig(project="p", location="l", model_name="model"),
-    )
+    ).run_message("do something", use_thinking=False)
     assert result == "response!"
     async_client.aclose.assert_awaited_once()

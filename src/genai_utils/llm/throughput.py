@@ -9,7 +9,7 @@ def log_tokens_per_second(response: dict[str, Any], elapsed: float) -> None:
     Logs generation throughput (tokens/second) at info level.
 
     Takes a plain OpenAI-shaped ``dict``. The serverless endpoint returns one
-    directly; the direct :class:`LLM` client passes ``response.model_dump()``.
+    directly; the direct :class:`OpenaiChat` client passes ``response.model_dump()``.
     Prefers the server's own decode timing when available (llama.cpp reports a
     ``timings`` object with ``predicted_per_second``), otherwise falls back to
     ``completion_tokens`` over the measured wall-clock time, which works for any

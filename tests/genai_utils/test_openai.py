@@ -1,10 +1,10 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
 from pytest import mark, param, raises
 
-from genai_utils.local_models.llm import LLM, NoOutputError, _is_model_loading
+from genai_utils.llm.openai import NoOutputError, OpenaiChat, _is_model_loading
 
 
 def _make_response(content):
@@ -22,6 +22,13 @@ def _make_response(content):
     )
 
 
+def _mock_client() -> MagicMock:
+    """A stand-in for ``AsyncOpenAI`` whose ``create`` can be awaited."""
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock()
+    return client
+
+
 class _ModelLoadingError(openai.InternalServerError):
     """A 503 InternalServerError without the awkward real constructor."""
 
@@ -37,38 +44,38 @@ def test_is_model_loading_true_for_503() -> None:
     assert _is_model_loading(_ModelLoadingError()) is True
 
 
-def test_run_message_retries_while_model_loads() -> None:
+async def test_run_message_retries_while_model_loads() -> None:
     """A 503 (model still loading) should be retried, then succeed."""
-    llm = LLM(model_url="http://localhost:1234", model_name="test-model")
-    llm.client = MagicMock()
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    llm.client = _mock_client()
     llm.client.chat.completions.create.side_effect = [
         _ModelLoadingError(),
         _make_response("ready now"),
     ]
 
     # patch out tenacity's sleep so the exponential backoff doesn't slow the test
-    with patch("tenacity.nap.time.sleep"):
-        result = llm.run_message("hello", use_thinking=False)
+    with patch.object(OpenaiChat.run_message.retry, "sleep", new=AsyncMock()):
+        result = await llm.run_message("hello", use_thinking=False)
 
     assert result == "ready now"
     assert llm.client.chat.completions.create.call_count == 2
 
 
-def test_run_message_returns_content() -> None:
-    llm = LLM(model_url="http://localhost:1234", model_name="test-model")
-    llm.client = MagicMock()
+async def test_run_message_returns_content() -> None:
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    llm.client = _mock_client()
     llm.client.chat.completions.create.return_value = _make_response("the answer")
 
-    assert llm.run_message("hello", use_thinking=False) == "the answer"
+    assert await llm.run_message("hello", use_thinking=False) == "the answer"
 
 
-def test_run_message_raises_on_no_output() -> None:
-    llm = LLM(model_url="http://localhost:1234", model_name="test-model")
-    llm.client = MagicMock()
+async def test_run_message_raises_on_no_output() -> None:
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    llm.client = _mock_client()
     llm.client.chat.completions.create.return_value = _make_response(None)
 
     with raises(NoOutputError):
-        llm.run_message("hello", use_thinking=False)
+        await llm.run_message("hello", use_thinking=False)
 
 
 @mark.parametrize(
@@ -78,12 +85,14 @@ def test_run_message_raises_on_no_output() -> None:
         param(False, False, id="thinking disabled"),
     ],
 )
-def test_run_message_passes_thinking_config(use_thinking, expected_enabled) -> None:
-    llm = LLM(model_url="http://localhost:1234", model_name="test-model")
-    llm.client = MagicMock()
+async def test_run_message_passes_thinking_config(
+    use_thinking, expected_enabled
+) -> None:
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    llm.client = _mock_client()
     llm.client.chat.completions.create.return_value = _make_response("ok")
 
-    llm.run_message("hello", use_thinking=use_thinking)
+    await llm.run_message("hello", use_thinking=use_thinking)
 
     _, kwargs = llm.client.chat.completions.create.call_args
     extra_body = kwargs["extra_body"]
@@ -92,3 +101,23 @@ def test_run_message_passes_thinking_config(use_thinking, expected_enabled) -> N
     assert extra_body["timings_per_token"] is True
     # the model name is forwarded to the API
     assert kwargs["model"] == "test-model"
+
+
+async def test_client_rebuilt_when_event_loop_changes() -> None:
+    """A client used on a now-dead loop is replaced rather than reused."""
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    first = llm._get_client()
+    llm._loop = MagicMock()  # pretend the client was last used on another loop
+
+    assert llm._get_client() is not first
+
+
+async def test_aclose_leaves_a_usable_client() -> None:
+    llm = OpenaiChat(model_url="http://localhost:1234", model_name="test-model")
+    old = llm.client
+
+    await llm.aclose()
+    await llm.aclose()  # safe to call twice
+
+    assert llm.client is not old
+    assert not llm.client.is_closed()
