@@ -1,8 +1,8 @@
 import logging
 
-from genai_utils.local_models.throughput import log_tokens_per_second
+from genai_utils.llm.throughput import log_tokens_per_second
 
-LOGGER_NAME = "genai_utils.local_models.throughput"
+LOGGER_NAME = "genai_utils.llm.throughput"
 
 
 def test_log_tokens_per_second_silent_when_info_disabled(caplog) -> None:

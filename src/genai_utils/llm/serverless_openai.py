@@ -3,13 +3,13 @@ This file contains basic functionality for making requests to a model deployed
 as a vast.ai *serverless* endpoint.
 
 Unlike a plain instance (where you'd POST straight to the vLLM/llama.cpp server,
-see ``llm.LLM``), a serverless endpoint sits behind vast's autoscaler:
+see ``openai.OpenaiChat``), a serverless endpoint sits behind vast's autoscaler:
 you ask the autoscaler for a ready worker and it routes the request. The
 ``vastai`` SDK's async ``Serverless`` client handles that for you, so this is an
 async client.
 
 The ``Serverless`` client and the resolved endpoint are built once and reused
-across calls (see :meth:`ServerlessLLM._get_endpoint`). Constructing the client
+across calls (see :meth:`ServerlessChat._get_endpoint`). Constructing the client
 downloads vast's root SSL certificate and opens an aiohttp session, and
 resolving the endpoint by name is a control-plane round-trip that lists every
 endpoint on the account — doing all of that per request (the previous
@@ -26,8 +26,9 @@ import time
 from vastai import Serverless
 from vastai.serverless.client.endpoint import Endpoint_
 
-from genai_utils.local_models import NoOutputError
-from genai_utils.local_models.throughput import log_tokens_per_second
+from genai_utils.llm import NoOutputError
+from genai_utils.llm.models import ChatModel
+from genai_utils.llm.throughput import log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
 
@@ -38,14 +39,14 @@ _logger = logging.getLogger(__name__)
 # on each attempt. Its own checks run between attempts and while polling for a
 # worker, never during the worker call itself, which has a separate 600s budget
 # we cannot reach through ``request``. So this is enforced from the outside too
-# (see :meth:`ServerlessLLM.run_message`), making it a real ceiling.
+# (see :meth:`ServerlessChat.run_message`), making it a real ceiling.
 #
 # 300s is generous for a request a warm worker serves. It does not cover waking
 # a cold worker, which takes minutes: keep workers warm, or raise it.
 DEFAULT_REQUEST_TIMEOUT = 300.0
 
 
-class ServerlessLLM:
+class ServerlessChat(ChatModel):
     """
     A model served via a vast.ai serverless endpoint.
 
