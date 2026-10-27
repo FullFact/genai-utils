@@ -8,6 +8,9 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
+from genai_utils.llm import NoOutputError
+from genai_utils.llm.models import ChatModel
+
 _logger = logging.getLogger(__name__)
 
 USER_AGENT = "FullFact (FullFact Media Ingest. https://fullfact.ai)"
@@ -166,7 +169,7 @@ def add_citations(response: types.GenerateContentResponse) -> str:
     Add citations to Gemini response text.
     """
     if not response.candidates or not response.text:
-        raise GeminiError(
+        raise NoOutputError(
             f"No model output: possible reason: {response.prompt_feedback}"
         )
     text: str = response.text
@@ -408,7 +411,7 @@ def _parse_response(
 ) -> str:
     """Validate a generate_content response and return its text."""
     if not (response.candidates and response.text and isinstance(response.text, str)):
-        raise GeminiError(
+        raise NoOutputError(
             f"No model output: possible reason: {response.prompt_feedback}"
         )
 
@@ -427,28 +430,17 @@ def _parse_response(
     return response.text
 
 
-def run_prompt(
-    prompt: str,
-    video_uri: str | None = None,
-    output_schema: types.SchemaUnion | None = None,
-    system_instruction: str | None = None,
-    generation_config: dict[str, Any] = DEFAULT_PARAMETERS,
-    safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
-    model_config: ModelConfig | None = None,
-    use_grounding: bool = False,
-    do_thinking: bool = False,
-    inline_citations: bool = False,
-    labels: dict[str, str] = {},
-) -> str:
+class GeminiChat(ChatModel):
     """
-    A synchronous version of `run_prompt_async`.
+    A Gemini model on Vertex AI.
 
     Parameters
     ----------
-    prompt: str
-        The prompt given to the model
-    video_uri: str | None
-        A Google Cloud URI for a video that you want to prompt.
+    model_config: ModelConfig | None
+        The config for the Gemini model.
+        Specifies project, location, and model name.
+        If None, will attempt to use environment variables:
+        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
     output_schema: types.SchemaUnion | None
         A valid schema for the model output.
         Generally, we'd recommend this being a pydantic BaseModel inheriting class,
@@ -476,21 +468,12 @@ def run_prompt(
     safety_settings: dict[generative_models.HarmCategory, generative_models.HarmBlockThreshold]
         The safety settings for generation. Determines what will be blocked.
         See the docs (`safety settings`_)
-    model_config: ModelConfig | None
-        The config for the Gemini model.
-        Specifies project, location, and model name.
-        If None, will attempt to use environment variables:
-        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
     use_grounding: bool
         Whether Gemini should perform a Google search to ground results.
         This will allow it to pull from up-to-date information,
         and makes the output more likely to be factual.
         Does not work with structured output.
         See the docs (`grounding`_).
-    do_thinking: bool
-        Whether Gemini should use a thought process.
-        This is more expensive but may yield better results.
-        Do not use for bulk tasks that don't require complex thoughts.
     inline_citations: bool
         Whether output should include citations inline with the text.
         These citations will be links to be used as evidence.
@@ -500,153 +483,124 @@ def run_prompt(
         Labels are key-value pairs that can be used to organize and filter requests
         in Google Cloud logs and metrics.
 
-    Returns
-    -------
-    The text output of the Gemini model.
-
     .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
     .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
     .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
     """
-    if model_config is None:
-        model_config = generate_model_config()
 
-    request = _build_request(
-        prompt,
-        video_uri,
-        output_schema,
-        system_instruction,
-        generation_config,
-        safety_settings,
-        model_config,
-        use_grounding,
-        do_thinking,
-        inline_citations,
-        labels,
-    )
-    client = genai.Client(
-        vertexai=True,
-        project=model_config.project,
-        location=model_config.location,
-    )
-    try:
-        response = client.models.generate_content(**request)
-    finally:
-        client.close()
+    def __init__(
+        self,
+        model_config: ModelConfig | None = None,
+        output_schema: types.SchemaUnion | None = None,
+        system_instruction: str | None = None,
+        generation_config: dict[str, Any] = DEFAULT_PARAMETERS,
+        safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
+        use_grounding: bool = False,
+        inline_citations: bool = False,
+        labels: dict[str, str] = {},
+    ):
+        if model_config is None:
+            model_config = generate_model_config()
+        self.model_config = model_config
+        self.output_schema = output_schema
+        self.system_instruction = system_instruction
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self.use_grounding = use_grounding
+        self.inline_citations = inline_citations
+        self.labels = labels
 
-    return _parse_response(response, use_grounding, inline_citations)
+    def _build_request(
+        self, message_content: str, use_thinking: bool, video_uri: str | None
+    ) -> dict[str, Any]:
+        return _build_request(
+            message_content,
+            video_uri,
+            self.output_schema,
+            self.system_instruction,
+            self.generation_config,
+            self.safety_settings,
+            self.model_config,
+            self.use_grounding,
+            use_thinking,
+            self.inline_citations,
+            self.labels,
+        )
 
+    def _build_client(self) -> genai.Client:
+        return genai.Client(
+            vertexai=True,
+            project=self.model_config.project,
+            location=self.model_config.location,
+        )
 
-async def run_prompt_async(
-    prompt: str,
-    video_uri: str | None = None,
-    output_schema: types.SchemaUnion | None = None,
-    system_instruction: str | None = None,
-    generation_config: dict[str, Any] = DEFAULT_PARAMETERS,
-    safety_settings: list[types.SafetySetting] = DEFAULT_SAFETY_SETTINGS,
-    model_config: ModelConfig | None = None,
-    use_grounding: bool = False,
-    do_thinking: bool = False,
-    inline_citations: bool = False,
-    labels: dict[str, str] = {},
-) -> str:
-    """
-    Runs a prompt through the model.
+    async def run_message(
+        self,
+        message_content: str,
+        use_thinking: bool,
+        video_uri: str | None = None,
+    ) -> str:
+        """
+        Sends the message to Gemini and returns its reply.
 
-    Parameters
-    ----------
-    prompt: str
-        The prompt given to the model
-    video_uri: str | None
-        A Google Cloud URI for a video that you want to prompt.
-    output_schema: types.SchemaUnion | None
-        A valid schema for the model output.
-        Generally, we'd recommend this being a pydantic BaseModel inheriting class,
-        which defines the desired schema of the model output.
-        ```python
-        from pydantic import BaseModel, Field
+        Parameters
+        ----------
+        message_content: str
+            The prompt given to the model.
+        use_thinking: bool
+            Whether Gemini should use a thought process.
+            This is more expensive but may yield better results.
+            Do not use for bulk tasks that don't require complex thoughts.
+        video_uri: str | None
+            A Google Cloud URI for a video that you want to prompt.
 
-        class Movie(BaseModel):
-            title: str = Field(description="The title of the movie")
-            year: int = Field(description="The year the film was released in the UK")
+        Returns
+        -------
+        str
+            The text output of the Gemini model.
 
-        schema = Movie
-        # or
-        schema = list[Movie]
-        ```
-        Use this if you want structured JSON output.
-    system_instruction: str | None
-        An instruction to the model which essentially goes before the prompt.
-        For example:
-        ```
-        You are a fact checker and you must base all your answers on evidence
-        ```
-    generation_config: dict[str, Any]
-        The parameters for the generation. See the docs (`generation config`_).
-    safety_settings: dict[generative_models.HarmCategory, generative_models.HarmBlockThreshold]
-        The safety settings for generation. Determines what will be blocked.
-        See the docs (`safety settings`_)
-    model_config: ModelConfig | None
-        The config for the Gemini model.
-        Specifies project, location, and model name.
-        If None, will attempt to use environment variables:
-        `GEMINI_PROJECT`, `GEMINI_LOCATION`, and `GEMINI_MODEL`.
-    use_grounding: bool
-        Whether Gemini should perform a Google search to ground results.
-        This will allow it to pull from up-to-date information,
-        and makes the output more likely to be factual.
-        Does not work with structured output.
-        See the docs (`grounding`_).
-    do_thinking: bool
-        Whether Gemini should use a thought process.
-        This is more expensive but may yield better results.
-        Do not use for bulk tasks that don't require complex thoughts.
-    inline_citations: bool
-        Whether output should include citations inline with the text.
-        These citations will be links to be used as evidence.
-        This is only possible if grounding is set to true.
-    labels: dict[str, str]
-        Optional labels to attach to the API call for tracking and monitoring purposes.
-        Labels are key-value pairs that can be used to organize and filter requests
-        in Google Cloud logs and metrics.
+        Raises
+        ------
+        NoOutputError:
+            if the model returns no output.
+        NoGroundingError:
+            if grounding was asked for but didn't run.
+        GeminiError:
+            if the options given can't be used together.
+        """
+        request = self._build_request(message_content, use_thinking, video_uri)
 
-    Returns
-    -------
-    The text output of the Gemini model.
+        # The async transport binds to the running event loop and this is often
+        # invoked under a short-lived loop (asyncio.run), so unlike the sync path we
+        # can't safely share one client across calls. Build one here and close its
+        # async transport so the connection pool isn't leaked.
+        client = self._build_client()
+        try:
+            response = await client.aio.models.generate_content(**request)
+        finally:
+            await client.aio.aclose()
 
-    .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
-    .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
-    .. _grounding: https://ai.google.dev/gemini-api/docs/google-search
-    """
-    if model_config is None:
-        model_config = generate_model_config()
+        return _parse_response(response, self.use_grounding, self.inline_citations)
 
-    request = _build_request(
-        prompt,
-        video_uri,
-        output_schema,
-        system_instruction,
-        generation_config,
-        safety_settings,
-        model_config,
-        use_grounding,
-        do_thinking,
-        inline_citations,
-        labels,
-    )
+    def run_message_sync(
+        self,
+        message_content: str,
+        use_thinking: bool,
+        video_uri: str | None = None,
+    ) -> str:
+        """
+        A synchronous version of `run_message`, for code that can't await.
+        """
+        request = self._build_request(message_content, use_thinking, video_uri)
+        client = self._build_client()
+        try:
+            response = client.models.generate_content(**request)
+        finally:
+            client.close()
 
-    # The async transport binds to the running event loop and this is often
-    # invoked under a short-lived loop (asyncio.run), so unlike the sync path we
-    # can't safely share one client across calls. Build one here and close its
-    # async transport so the connection pool isn't leaked.
-    client = genai.Client(
-        vertexai=True,
-        project=model_config.project,
-        location=model_config.location,
-    )
-    try:
-        response = await client.aio.models.generate_content(**request)
-    finally:
-        await client.aio.aclose()
+        return _parse_response(response, self.use_grounding, self.inline_citations)
 
-    return _parse_response(response, use_grounding, inline_citations)
+    async def aclose(self) -> None:
+        """
+        Does nothing: each call builds and closes its own client.
+        """

@@ -4,8 +4,8 @@ import requests
 from google.genai import types
 from pytest import mark, param, raises
 
-from genai_utils.gemini import (
-    GeminiError,
+from genai_utils.llm import NoOutputError
+from genai_utils.llm.gemini import (
     add_citations,
     check_grounding_ran,
     follow_redirect,
@@ -69,7 +69,7 @@ def dummy_redirect(uri: str) -> str:
         ),
     ],
 )
-@patch("genai_utils.gemini.follow_redirect", wraps=dummy_redirect)
+@patch("genai_utils.llm.gemini.follow_redirect", wraps=dummy_redirect)
 def test_add_citations(
     _mock_follow_redirect: Mock,
     text: str,
@@ -102,7 +102,7 @@ def test_add_citations(
         ),
     ],
 )
-@patch("genai_utils.gemini.requests.get")
+@patch("genai_utils.llm.gemini.requests.get")
 def test_follow_redirect(
     mock_get: Mock, og_url: str, raises: BaseException | None, expected: str
 ) -> None:
@@ -215,5 +215,5 @@ def test_add_citations_raises_when_missing_output(candidates, text):
     response.candidates = candidates
     response.text = text
     response.prompt_feedback = "blocked"
-    with raises(GeminiError):
+    with raises(NoOutputError):
         add_citations(response)

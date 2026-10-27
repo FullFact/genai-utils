@@ -6,9 +6,9 @@ from google.genai import Client
 from google.genai.client import AsyncClient
 from google.genai.models import Models
 
-from genai_utils.gemini import (
+from genai_utils.llm.gemini import (
+    GeminiChat,
     ModelConfig,
-    run_prompt_async,
     validate_labels,
 )
 
@@ -105,9 +105,9 @@ def test_validate_labels_valid_special_chars():
     assert result == valid_labels
 
 
-@patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_with_valid_labels(mock_client):
-    """Test that run_prompt accepts and uses valid labels"""
+@patch("genai_utils.llm.gemini.genai.Client")
+async def test_run_message_with_valid_labels(mock_client):
+    """Test that GeminiChat accepts and uses valid labels"""
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -119,13 +119,12 @@ async def test_run_prompt_with_valid_labels(mock_client):
 
     labels = {"team": "ai", "project": "test"}
 
-    await run_prompt_async(
-        "test prompt",
+    await GeminiChat(
         labels=labels,
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
         ),
-    )
+    ).run_message("test prompt", use_thinking=False)
 
     # Verify the call was made
     assert models.generate_content.called
@@ -134,9 +133,9 @@ async def test_run_prompt_with_valid_labels(mock_client):
     assert call_kwargs["config"].labels == labels
 
 
-@patch("genai_utils.gemini.genai.Client")
-async def test_run_prompt_with_invalid_labels(mock_client):
-    """Test that run_prompt filters out invalid labels"""
+@patch("genai_utils.llm.gemini.genai.Client")
+async def test_run_message_with_invalid_labels(mock_client):
+    """Test that GeminiChat filters out invalid labels"""
     client = Mock(Client)
     models = Mock(Models)
     async_client = Mock(AsyncClient)
@@ -148,13 +147,12 @@ async def test_run_prompt_with_invalid_labels(mock_client):
 
     invalid_labels = {"Invalid": "value", "valid": "label"}  # uppercase key is invalid
 
-    await run_prompt_async(
-        "test prompt",
+    await GeminiChat(
         labels=invalid_labels,
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
         ),
-    )
+    ).run_message("test prompt", use_thinking=False)
 
     # Verify the call was made with only valid labels
     assert models.generate_content.called
@@ -164,16 +162,16 @@ async def test_run_prompt_with_invalid_labels(mock_client):
     assert call_kwargs["config"].labels == {"valid": "label"}
 
 
-@patch("genai_utils.gemini.genai.Client")
+@patch("genai_utils.llm.gemini.genai.Client")
 @patch.dict(os.environ, {"GENAI_LABEL_TEAM": "ai", "GENAI_LABEL_ENV": "test"})
-async def test_run_prompt_merges_env_labels(mock_client):
-    """Test that run_prompt merges environment labels with request labels"""
+async def test_run_message_merges_env_labels(mock_client):
+    """Test that GeminiChat merges environment labels with request labels"""
     # Need to reload the module to pick up the new environment variables
     import importlib
 
-    import genai_utils.gemini
+    import genai_utils.llm.gemini
 
-    importlib.reload(genai_utils.gemini)
+    importlib.reload(genai_utils.llm.gemini)
 
     client = Mock(Client)
     models = Mock(Models)
@@ -186,13 +184,12 @@ async def test_run_prompt_merges_env_labels(mock_client):
 
     request_labels = {"project": "test"}
 
-    await genai_utils.gemini.run_prompt_async(
-        "test prompt",
+    await genai_utils.llm.gemini.GeminiChat(
         labels=request_labels,
         model_config=ModelConfig(
             project="project", location="location", model_name="model"
         ),
-    )
+    ).run_message("test prompt", use_thinking=False)
 
     # Verify the call was made with merged labels
     assert models.generate_content.called

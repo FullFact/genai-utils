@@ -4,7 +4,7 @@ A demo of how to use Gemini in genai utils
 
 from pprint import pp
 
-from genai_utils.gemini import run_prompt
+from genai_utils.llm.gemini import GeminiChat
 from genai_utils.parsing import parse_model_json_output
 
 # Basic usage
@@ -14,7 +14,7 @@ test_prompt = """
 Generate a family tree for the Plantagenet monarchs of England. Output should be in correctly formatted json.
 """.strip()
 
-output = run_prompt(test_prompt)
+output = GeminiChat().run_message_sync(test_prompt, use_thinking=False)
 parsed = parse_model_json_output(output)
 pp(parsed)
 
@@ -24,7 +24,9 @@ print("\n\nMULTIMODEL" + "\n" + "-" * 100)
 
 video = "gs://raphael-test/tiktok/7149378297489558830.mp4"
 
-output = run_prompt("Summarise this video", video_uri=video)
+output = GeminiChat().run_message_sync(
+    "Summarise this video", use_thinking=False, video_uri=video
+)
 
 pp(output)
 
@@ -47,7 +49,8 @@ class Monarch(BaseModel):
     children: list[str] = Field(description="A list of their children")
 
 
-output = run_prompt(test_prompt, output_schema=list[Monarch])
+model = GeminiChat(output_schema=list[Monarch])
+output = model.run_message_sync(test_prompt, use_thinking=False)
 parsed = parse_model_json_output(output)
 pp(parsed)
 
@@ -62,7 +65,8 @@ instruction = (
     "And you constantly mention your pet Badger."
 )
 
-output = run_prompt(prompt, system_instruction=instruction)
+model = GeminiChat(system_instruction=instruction)
+output = model.run_message_sync(prompt, use_thinking=False)
 pp(output)
 
 
@@ -72,7 +76,8 @@ prompt = (
     "Answer in one paragraph."
 )
 
-answer_inline_citations = run_prompt(prompt, use_grounding=True, inline_citations=True)
+model = GeminiChat(use_grounding=True, inline_citations=True)
+answer_inline_citations = model.run_message_sync(prompt, use_thinking=False)
 print("GROUNDING W/ CITATIONS", "\n", "-" * 100, "\n", answer_inline_citations, "\n\n")
 
 # Thinking
@@ -81,5 +86,5 @@ print("THINKING" + "\n" + "-" * 100)
 test_prompt = """
 Why is fact checking important?
 """.strip()
-output = run_prompt(test_prompt, do_thinking=True)
+output = GeminiChat().run_message_sync(test_prompt, use_thinking=True)
 pp(output)
