@@ -2,6 +2,7 @@ import inspect
 
 from pytest import mark, param
 
+from genai_utils.llm.fallback_model import FallbackChat
 from genai_utils.llm.gemini import GeminiChat, ModelConfig
 from genai_utils.llm.models import ChatModel
 from genai_utils.llm.openai import OpenaiChat
@@ -16,6 +17,13 @@ _GEMINI_CONFIG = ModelConfig(project="p", location="l", model_name="m")
         param(OpenaiChat(model_url="http://localhost:1234"), id="OpenaiChat"),
         param(ServerlessChat(endpoint_name="ep"), id="ServerlessChat"),
         param(GeminiChat(model_config=_GEMINI_CONFIG), id="GeminiChat"),
+        param(
+            FallbackChat(
+                primary=ServerlessChat(endpoint_name="ep"),
+                fallback=GeminiChat(model_config=_GEMINI_CONFIG),
+            ),
+            id="FallbackChat",
+        ),
     ],
 )
 def test_clients_implement_chat_model(client: ChatModel) -> None:
@@ -34,3 +42,9 @@ def test_clients_type_check_as_chat_model() -> None:
     _accepts_chat_model(OpenaiChat(model_url="http://localhost:1234"))
     _accepts_chat_model(ServerlessChat(endpoint_name="ep"))
     _accepts_chat_model(GeminiChat(model_config=_GEMINI_CONFIG))
+    _accepts_chat_model(
+        FallbackChat(
+            primary=ServerlessChat(endpoint_name="ep"),
+            fallback=GeminiChat(model_config=_GEMINI_CONFIG),
+        )
+    )
