@@ -4,14 +4,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from genai_utils.llm import NoOutputError
-from genai_utils.llm.fallback_model import FallbackChat
+from genai_utils.llm.fallback_model import FallbackChat, _describe
+from genai_utils.llm.gemini import GeminiChat, ModelConfig
+from genai_utils.llm.serverless_openai import ServerlessChat
 
 
 def _fake_model(
-    reply: str | None = None, error: BaseException | None = None
+    reply: str | None = None,
+    error: BaseException | None = None,
+    model_name: str | None = None,
 ) -> MagicMock:
     """Build a fake ``ChatModel`` that returns ``reply`` or raises ``error``."""
     model = MagicMock()
+    model.model_name = model_name
     model.run_message = AsyncMock(return_value=reply, side_effect=error)
     model.aclose = AsyncMock()
     return model
@@ -48,6 +53,35 @@ async def test_falls_back_when_primary_raises(
     assert result == "fallback reply"
     fallback.run_message.assert_awaited_once_with("hi", False)
     assert "using fallback model" in caplog.text
+
+
+async def test_fallback_warning_has_fields_for_monitoring(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    primary = _fake_model(error=asyncio.TimeoutError(), model_name="claimants")
+    fallback = _fake_model(reply="fallback reply")
+
+    await FallbackChat(primary, fallback).run_message("hi", False)
+
+    [record] = [r for r in caplog.records if r.name == "genai_utils.llm.fallback_model"]
+    assert record.levelname == "WARNING"
+    assert record.event_metric == "model_fallback"
+    assert record.primary_model == "MagicMock(claimants)"
+    assert record.fallback_model == "MagicMock"
+    assert record.error_type == "TimeoutError"
+    assert record.exc_info is not None
+
+
+def test_describe_uses_model_name_when_the_client_has_one() -> None:
+    serverless = ServerlessChat(endpoint_name="endpoint", model_name="claimants")
+    gemini = GeminiChat(
+        model_config=ModelConfig(
+            project="project", location="location", model_name="gemini-3-flash"
+        )
+    )
+
+    assert _describe(serverless) == "ServerlessChat(claimants)"
+    assert _describe(gemini) == "GeminiChat"
 
 
 async def test_fallback_error_is_raised() -> None:
