@@ -19,6 +19,7 @@ from tenacity import (
 
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
+from genai_utils.llm.retry import Retryable, check_n_attempts, retry_on_failure
 from genai_utils.llm.throughput import log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def _is_model_loading(exception: BaseException) -> bool:
     )
 
 
-class OpenaiChat(ChatModel):
+class OpenaiChat(ChatModel, Retryable):
     """
     An LLM using the Open AI API.
     This might be something served via VLLM or Llama.cpp.
@@ -50,6 +51,7 @@ class OpenaiChat(ChatModel):
         model_url: str,
         model_name: str = "local-model",
         api_key: str = "not-needed",
+        n_attempts: int = 1,
     ):
         """
         Args:
@@ -62,10 +64,16 @@ class OpenaiChat(ChatModel):
                 so that behaviour remains as default.
             api_key:
                 The API key for the model, if you need one.
+            n_attempts:
+                The number of attempts to try and run a message before failing.
+                Unless set, messages will be tried once.
+                This is separate from the wait for a model that is still
+                loading (503), which is always retried.
         """
         self.model_url = model_url
         self.model_name = model_name
         self._api_key = api_key
+        self.n_attempts = check_n_attempts(n_attempts)
         self.client = self._build_client()
         # The client's connection pool is bound to the event loop it is first
         # used on, so we track that loop and rebuild if it changes.
@@ -99,6 +107,26 @@ class OpenaiChat(ChatModel):
         self._loop = loop
         return self.client
 
+    def is_retryable(self, exc: BaseException) -> bool:
+        """
+        Retries connection errors, timeouts, rate limits, server errors and
+        empty replies. A 503 is left out: the inner retry on
+        :meth:`run_message` has already waited out its budget for the model
+        to load.
+        """
+        if _is_model_loading(exc):
+            return False
+        return isinstance(
+            exc,
+            (
+                openai.APIConnectionError,
+                openai.RateLimitError,
+                openai.InternalServerError,
+                NoOutputError,
+            ),
+        )
+
+    @retry_on_failure
     @retry(
         retry=retry_if_exception(_is_model_loading),
         wait=wait_exponential(multiplier=2, min=5, max=30),

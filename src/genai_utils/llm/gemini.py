@@ -5,11 +5,17 @@ from typing import Any
 
 import requests
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
+from genai_utils.llm.retry import (
+    Retryable,
+    check_n_attempts,
+    retry_on_failure,
+    retry_on_failure_sync,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -116,13 +122,13 @@ def follow_redirect(uri: str) -> str:
         _logger.warning(
             f"The link ({uri}) could not be followed. "
             "Falling back to vertex AI cached link."
-            f"Details: {repr(exc)}"
+            f"Details: {exc!r}"
         )
     except Exception as exc:
         _logger.warning(
             f"Something went wrong with ({uri}). "
             "Falling back to vertex AI cached link. "
-            f"Details: {repr(exc)}"
+            f"Details: {exc!r}"
         )
     return uri
 
@@ -430,7 +436,7 @@ def _parse_response(
     return response.text
 
 
-class GeminiChat(ChatModel):
+class GeminiChat(ChatModel, Retryable):
     """
     A Gemini model on Vertex AI.
 
@@ -482,6 +488,9 @@ class GeminiChat(ChatModel):
         Optional labels to attach to the API call for tracking and monitoring purposes.
         Labels are key-value pairs that can be used to organize and filter requests
         in Google Cloud logs and metrics.
+    n_attempts:
+        The number of attempts to try and run a message before failing.
+        Unless set, messages will be tried once.
 
     .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
     .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
@@ -498,6 +507,7 @@ class GeminiChat(ChatModel):
         use_grounding: bool = False,
         inline_citations: bool = False,
         labels: dict[str, str] = {},
+        n_attempts: int = 1,
     ):
         if model_config is None:
             model_config = generate_model_config()
@@ -509,6 +519,17 @@ class GeminiChat(ChatModel):
         self.use_grounding = use_grounding
         self.inline_citations = inline_citations
         self.labels = labels
+        self.n_attempts = check_n_attempts(n_attempts)
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        """
+        Retries server errors (5xx) and rate limits (429).
+        Other client errors, and replies blocked or empty, are left alone:
+        with the default temperature of 0 they would come back the same.
+        """
+        if isinstance(exc, errors.ServerError):
+            return True
+        return isinstance(exc, errors.ClientError) and exc.code == 429
 
     def _build_request(
         self, message_content: str, use_thinking: bool, video_uri: str | None
@@ -534,6 +555,7 @@ class GeminiChat(ChatModel):
             location=self.model_config.location,
         )
 
+    @retry_on_failure
     async def run_message(
         self,
         message_content: str,
@@ -582,6 +604,7 @@ class GeminiChat(ChatModel):
 
         return _parse_response(response, self.use_grounding, self.inline_citations)
 
+    @retry_on_failure_sync
     def run_message_sync(
         self,
         message_content: str,
