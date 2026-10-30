@@ -51,3 +51,14 @@ class ChatModel(Protocol):
         Safe to call more than once.
         """
         ...
+
+
+def describe_model(model: object) -> str:
+    """
+    Names a model for logs, e.g. ``ServerlessChat(claimants)``.
+    ``ChatModel`` has no name, so this uses ``model_name`` where the client has one.
+    """
+    model_name = getattr(model, "model_name", None)
+    if model_name:
+        return f"{type(model).__name__}({model_name})"
+    return type(model).__name__

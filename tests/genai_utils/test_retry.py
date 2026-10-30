@@ -2,9 +2,11 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
+import httpx
 import openai
 from google.genai import errors
-from pytest import MonkeyPatch, fixture, mark, param, raises
+from pytest import LogCaptureFixture, MonkeyPatch, fixture, mark, param, raises
 from tenacity import wait_none
 
 from genai_utils.llm import NoOutputError, retry
@@ -66,6 +68,19 @@ async def test_succeeds_on_a_later_attempt() -> None:
 
     assert await client.run() == "ok"
     assert client.calls == 3
+
+
+async def test_retries_log_monitoring_fields(caplog: LogCaptureFixture) -> None:
+    client = _FakeClient(n_attempts=2, failures=[_Transient()])
+
+    await client.run()
+
+    [record] = [r for r in caplog.records if r.name == "genai_utils.llm.retry"]
+    assert record.levelname == "WARNING"
+    assert record.event_metric == "model_retry"
+    assert record.model == "_FakeClient"
+    assert record.attempt == 1
+    assert record.error_type == "_Transient"
 
 
 async def test_raises_last_error_once_attempts_run_out() -> None:
@@ -157,6 +172,10 @@ def test_openai_is_retryable(exc: Exception, expected: bool) -> None:
     assert OpenaiChat(model_url="http://x").is_retryable(exc) is expected
 
 
+def test_openai_sdk_does_not_retry_on_top_of_ours() -> None:
+    assert OpenaiChat(model_url="http://x").client.max_retries == 0
+
+
 @mark.parametrize(
     "exc,expected",
     [
@@ -174,8 +193,17 @@ def test_serverless_is_retryable(exc: Exception, expected: bool) -> None:
     "exc,expected",
     [
         param(errors.ServerError(500, {}), True, id="500"),
+        param(errors.ServerError(503, {}), True, id="503"),
+        param(errors.ServerError(501, {}), False, id="501"),
         param(errors.ClientError(429, {}), True, id="429"),
+        param(errors.ClientError(408, {}), True, id="408"),
         param(errors.ClientError(400, {}), False, id="400"),
+        param(httpx.ConnectError("refused"), True, id="httpx connect"),
+        param(httpx.ReadTimeout("slow"), True, id="httpx timeout"),
+        param(httpx.RemoteProtocolError("dropped"), True, id="httpx protocol"),
+        param(aiohttp.ServerDisconnectedError(), True, id="aiohttp disconnect"),
+        param(aiohttp.ClientOSError(), True, id="aiohttp os error"),
+        param(asyncio.TimeoutError(), True, id="timeout"),
         param(NoOutputError(), False, id="no output"),
         param(GeminiError(), False, id="bad options"),
     ],

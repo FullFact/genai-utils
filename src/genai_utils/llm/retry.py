@@ -15,15 +15,20 @@ from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 
 from tenacity import (
     AsyncRetrying,
+    RetryCallState,
     Retrying,
-    before_sleep_log,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
 from tenacity.wait import wait_base
 
+from genai_utils.llm.models import describe_model
+
 _logger = logging.getLogger(__name__)
+
+# Lets log-based metrics match the retry warning without relying on its text.
+RETRY_EVENT_METRIC = "model_retry"
 
 # Short, as these are for brief blips (a dropped connection, a rate limit),
 # not for waiting out a model that is still loading.
@@ -66,12 +71,31 @@ def check_n_attempts(n_attempts: int) -> int:
     return n_attempts
 
 
+def _log_retry(client: Retryable, state: RetryCallState) -> None:
+    """
+    Warns before each retry, with ``event_metric``, ``model``, ``attempt`` and
+    ``error_type`` as log record attributes, like the fallback warning.
+    """
+    exc = state.outcome.exception() if state.outcome else None
+    sleep = state.next_action.sleep if state.next_action else 0.0
+    _logger.warning(
+        f"Attempt {state.attempt_number} of {client.n_attempts} failed with "
+        f"{exc!r}; retrying in {sleep:.1f}s.",
+        extra={
+            "event_metric": RETRY_EVENT_METRIC,
+            "model": describe_model(client),
+            "attempt": state.attempt_number,
+            "error_type": type(exc).__name__,
+        },
+    )
+
+
 def _retry_settings(client: Retryable) -> dict[str, Any]:
     return {
         "stop": stop_after_attempt(client.n_attempts),
         "retry": retry_if_exception(client.is_retryable),
         "wait": _WAIT,
-        "before_sleep": before_sleep_log(_logger, logging.WARNING),
+        "before_sleep": functools.partial(_log_retry, client),
         "reraise": True,
     }
 

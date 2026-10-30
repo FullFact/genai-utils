@@ -83,6 +83,9 @@ class OpenaiChat(ChatModel, Retryable):
         return AsyncOpenAI(
             base_url=f"{self.model_url}/v1",
             api_key=self._api_key,
+            # Retries are ours (n_attempts and the 503 wait on run_message);
+            # the SDK's own would multiply them.
+            max_retries=0,
         )
 
     def _get_client(self) -> AsyncOpenAI:

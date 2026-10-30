@@ -1,8 +1,11 @@
+import asyncio
 import logging
 import os
 import re
 from typing import Any
 
+import aiohttp
+import httpx
 import requests
 from google import genai
 from google.genai import errors, types
@@ -18,6 +21,9 @@ from genai_utils.llm.retry import (
 )
 
 _logger = logging.getLogger(__name__)
+
+# The same codes google-genai's own retry options treat as transient.
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 USER_AGENT = "FullFact (FullFact Media Ingest. https://fullfact.ai)"
 
@@ -523,13 +529,25 @@ class GeminiChat(ChatModel, Retryable):
 
     def is_retryable(self, exc: BaseException) -> bool:
         """
-        Retries server errors (5xx) and rate limits (429).
-        Other client errors, and replies blocked or empty, are left alone:
+        Retries dropped connections, timeouts, and the status codes the
+        google-genai SDK treats as transient (408, 429, 500, 502, 503, 504).
+        Other errors, and replies blocked or empty, are left alone:
         with the default temperature of 0 they would come back the same.
         """
-        if isinstance(exc, errors.ServerError):
-            return True
-        return isinstance(exc, errors.ClientError) and exc.code == 429
+        if isinstance(exc, errors.APIError):
+            return exc.code in _RETRYABLE_STATUS_CODES
+        # The SDK doesn't wrap transport errors: sync calls raise httpx's,
+        # async calls raise aiohttp's (the SDK uses it when installed).
+        # asyncio.TimeoutError is only an alias of TimeoutError from 3.11
+        return isinstance(
+            exc,
+            (
+                httpx.TransportError,
+                aiohttp.ClientError,
+                TimeoutError,
+                asyncio.TimeoutError,
+            ),
+        )
 
     def _build_request(
         self, message_content: str, use_thinking: bool, video_uri: str | None
