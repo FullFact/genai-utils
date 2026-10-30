@@ -1,22 +1,11 @@
 import logging
 
-from genai_utils.llm.models import ChatModel
+from genai_utils.llm.models import ChatModel, describe_model
 
 _logger = logging.getLogger(__name__)
 
 # Lets log-based metrics match the fallback warning without relying on its text.
 FALLBACK_EVENT_METRIC = "model_fallback"
-
-
-def _describe(model: ChatModel) -> str:
-    """
-    Names a model for logs, e.g. ``ServerlessChat(claimants)``.
-    ``ChatModel`` has no name, so this uses ``model_name`` where the client has one.
-    """
-    model_name = getattr(model, "model_name", None)
-    if model_name:
-        return f"{type(model).__name__}({model_name})"
-    return type(model).__name__
 
 
 class FallbackChat(ChatModel):
@@ -51,8 +40,8 @@ class FallbackChat(ChatModel):
                 exc_info=True,
                 extra={
                     "event_metric": FALLBACK_EVENT_METRIC,
-                    "primary_model": _describe(self.primary),
-                    "fallback_model": _describe(self.fallback),
+                    "primary_model": describe_model(self.primary),
+                    "fallback_model": describe_model(self.fallback),
                     "error_type": type(exc).__name__,
                 },
             )

@@ -28,6 +28,7 @@ from vastai.serverless.client.endpoint import Endpoint_
 
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
+from genai_utils.llm.retry import Retryable, check_n_attempts, retry_on_failure
 from genai_utils.llm.throughput import log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ _logger = logging.getLogger(__name__)
 DEFAULT_REQUEST_TIMEOUT = 300.0
 
 
-class ServerlessChat(ChatModel):
+class ServerlessChat(ChatModel, Retryable):
     """
     A model served via a vast.ai serverless endpoint.
 
@@ -65,6 +66,7 @@ class ServerlessChat(ChatModel):
         max_tokens: int = 512,
         temperature: float = 0.7,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        n_attempts: int = 1,
     ):
         """
         Args:
@@ -83,12 +85,19 @@ class ServerlessChat(ChatModel):
             request_timeout:
                 Total seconds for the whole call: routing, queueing, retries
                 and generation. See :data:`DEFAULT_REQUEST_TIMEOUT`.
+            n_attempts:
+                The number of attempts to try and run a message before failing.
+                Unless set, messages will be tried once.
+                ``request_timeout`` applies to each attempt, so a call can
+                take (and bill GPU time for) up to
+                ``n_attempts * request_timeout`` seconds.
         """
         self.endpoint_name = endpoint_name
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.request_timeout = request_timeout
+        self.n_attempts = check_n_attempts(n_attempts)
         # Built once on first use and reused across calls (see _get_endpoint).
         self._client: Serverless | None = None
         self._endpoint: Endpoint_ | None = None
@@ -132,6 +141,16 @@ class ServerlessChat(ChatModel):
             self._loop = loop
             return self._endpoint
 
+    def is_retryable(self, exc: BaseException) -> bool:
+        """
+        Retries timeouts and empty replies.
+        The SDK raises bare ``Exception`` for most other failures, so those
+        can't be told apart from permanent ones and aren't retried.
+        """
+        # asyncio.TimeoutError is only an alias of TimeoutError from 3.11
+        return isinstance(exc, (TimeoutError, asyncio.TimeoutError, NoOutputError))
+
+    @retry_on_failure
     async def run_message(self, message_content: str, use_thinking: bool) -> str:
         """
         Sends the message to the serverless endpoint and returns the result.
@@ -140,8 +159,8 @@ class ServerlessChat(ChatModel):
         The autoscaler waits for a ready worker before routing, so — unlike the
         direct client — there's no "model loading" (503) retry to ride out
         here. The SDK does retry routing and connection failures;
-        ``request_timeout`` bounds the whole call and raises
-        :class:`asyncio.TimeoutError` when spent.
+        ``request_timeout`` bounds each attempt and raises
+        :class:`asyncio.TimeoutError` when spent; see ``n_attempts``.
         """
         extra_model_config = (
             {

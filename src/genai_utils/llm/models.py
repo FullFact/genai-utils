@@ -17,6 +17,9 @@ class ChatModel(Protocol):
     endpoint name, generation settings, ...), so they are deliberately not part
     of this protocol: depend on ``ChatModel`` at the call site and choose the
     implementation where it is constructed.
+
+    Retries aren't part of this protocol either: clients that support them
+    implement :class:`genai_utils.llm.retry.Retryable`.
     """
 
     async def run_message(self, message_content: str, use_thinking: bool) -> str:
@@ -48,3 +51,14 @@ class ChatModel(Protocol):
         Safe to call more than once.
         """
         ...
+
+
+def describe_model(model: object) -> str:
+    """
+    Names a model for logs, e.g. ``ServerlessChat(claimants)``.
+    ``ChatModel`` has no name, so this uses ``model_name`` where the client has one.
+    """
+    model_name = getattr(model, "model_name", None)
+    if model_name:
+        return f"{type(model).__name__}({model_name})"
+    return type(model).__name__

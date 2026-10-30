@@ -1,17 +1,29 @@
+import asyncio
 import logging
 import os
 import re
 from typing import Any
 
+import aiohttp
+import httpx
 import requests
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
+from genai_utils.llm.retry import (
+    Retryable,
+    check_n_attempts,
+    retry_on_failure,
+    retry_on_failure_sync,
+)
 
 _logger = logging.getLogger(__name__)
+
+# The same codes google-genai's own retry options treat as transient.
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 USER_AGENT = "FullFact (FullFact Media Ingest. https://fullfact.ai)"
 
@@ -116,13 +128,13 @@ def follow_redirect(uri: str) -> str:
         _logger.warning(
             f"The link ({uri}) could not be followed. "
             "Falling back to vertex AI cached link."
-            f"Details: {repr(exc)}"
+            f"Details: {exc!r}"
         )
     except Exception as exc:
         _logger.warning(
             f"Something went wrong with ({uri}). "
             "Falling back to vertex AI cached link. "
-            f"Details: {repr(exc)}"
+            f"Details: {exc!r}"
         )
     return uri
 
@@ -430,7 +442,7 @@ def _parse_response(
     return response.text
 
 
-class GeminiChat(ChatModel):
+class GeminiChat(ChatModel, Retryable):
     """
     A Gemini model on Vertex AI.
 
@@ -482,6 +494,9 @@ class GeminiChat(ChatModel):
         Optional labels to attach to the API call for tracking and monitoring purposes.
         Labels are key-value pairs that can be used to organize and filter requests
         in Google Cloud logs and metrics.
+    n_attempts:
+        The number of attempts to try and run a message before failing.
+        Unless set, messages will be tried once.
 
     .. _generation config: https://cloud.google.com/vertex-ai/docs/reference/rest/v1/GenerationConfig
     .. _safety settings: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/configure-safety-filters
@@ -498,6 +513,7 @@ class GeminiChat(ChatModel):
         use_grounding: bool = False,
         inline_citations: bool = False,
         labels: dict[str, str] = {},
+        n_attempts: int = 1,
     ):
         if model_config is None:
             model_config = generate_model_config()
@@ -509,6 +525,29 @@ class GeminiChat(ChatModel):
         self.use_grounding = use_grounding
         self.inline_citations = inline_citations
         self.labels = labels
+        self.n_attempts = check_n_attempts(n_attempts)
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        """
+        Retries dropped connections, timeouts, and the status codes the
+        google-genai SDK treats as transient (408, 429, 500, 502, 503, 504).
+        Other errors, and replies blocked or empty, are left alone:
+        with the default temperature of 0 they would come back the same.
+        """
+        if isinstance(exc, errors.APIError):
+            return exc.code in _RETRYABLE_STATUS_CODES
+        # The SDK doesn't wrap transport errors: sync calls raise httpx's,
+        # async calls raise aiohttp's (the SDK uses it when installed).
+        # asyncio.TimeoutError is only an alias of TimeoutError from 3.11
+        return isinstance(
+            exc,
+            (
+                httpx.TransportError,
+                aiohttp.ClientError,
+                TimeoutError,
+                asyncio.TimeoutError,
+            ),
+        )
 
     def _build_request(
         self, message_content: str, use_thinking: bool, video_uri: str | None
@@ -534,6 +573,7 @@ class GeminiChat(ChatModel):
             location=self.model_config.location,
         )
 
+    @retry_on_failure
     async def run_message(
         self,
         message_content: str,
@@ -582,6 +622,7 @@ class GeminiChat(ChatModel):
 
         return _parse_response(response, self.use_grounding, self.inline_citations)
 
+    @retry_on_failure_sync
     def run_message_sync(
         self,
         message_content: str,
