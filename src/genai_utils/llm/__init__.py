@@ -1,2 +1,2 @@
-class NoOutputError(Exception):
+class NoOutputError(RuntimeError):
     pass

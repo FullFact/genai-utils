@@ -138,3 +138,24 @@ model = OpenaiChat(model_url="http://localhost:8080")
 summary = await summarise(model, "...")
 await model.aclose()
 ```
+
+## Falling back between models
+
+A special `ChatModel` called `FallbackChat` exists so you can run a second, fallback model, when the primary model fails.
+
+For example:
+```python
+from genai_utils.llm.fallback_model import FallbackChat
+from genai_utils.llm.gemini import GeminiChat
+from genai_utils.llm.openai import OpenaiChat
+
+model = FallbackChat(
+    primary=OpenaiChat(model_url="http://localhost:8080"),
+    fallback=GeminiChat(),
+)
+result = await model.run_message("Who won the Battle of Crécy?", use_thinking=False)
+await model.aclose()
+```
+
+If the primary model raises an error, `FallbackChat` logs a warning and sends the same message to the fallback model.
+Errors from the fallback model are raised to the caller.
