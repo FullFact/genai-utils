@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from genai_utils.llm import NoOutputError
-from genai_utils.llm.fallback_model import FallbackChat, _describe
+from genai_utils.llm.fallback_model import FallbackChat
 from genai_utils.llm.gemini import GeminiChat, ModelConfig
+from genai_utils.llm.models import describe_model
 from genai_utils.llm.serverless_openai import ServerlessChat
 
 
@@ -80,8 +81,8 @@ def test_describe_uses_model_name_when_the_client_has_one() -> None:
         )
     )
 
-    assert _describe(serverless) == "ServerlessChat(claimants)"
-    assert _describe(gemini) == "GeminiChat"
+    assert describe_model(serverless) == "ServerlessChat(claimants)"
+    assert describe_model(gemini) == "GeminiChat"
 
 
 async def test_fallback_error_is_raised() -> None:
