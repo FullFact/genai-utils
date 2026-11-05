@@ -20,7 +20,7 @@ from tenacity import (
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
 from genai_utils.llm.retry import Retryable, check_n_attempts, retry_on_failure
-from genai_utils.llm.throughput import log_tokens_per_second
+from genai_utils.llm.throughput import log_token_usage, log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
 
@@ -169,7 +169,9 @@ class OpenaiChat(ChatModel, Retryable):
             ],
             extra_body=extra_model_config,
         )
-        log_tokens_per_second(response.model_dump(), time.perf_counter() - start)
+        response_dict = response.model_dump()
+        log_tokens_per_second(response_dict, time.perf_counter() - start)
+        log_token_usage(response_dict, self.model_name)
         response_text = response.choices[0].message.content
         if response_text is None:
             raise NoOutputError()
