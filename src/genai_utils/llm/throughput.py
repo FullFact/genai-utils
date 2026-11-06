@@ -39,3 +39,35 @@ def log_tokens_per_second(response: dict[str, Any], elapsed: float) -> None:
             completion_tokens,
             elapsed,
         )
+
+
+def log_token_usage(response: dict[str, Any], model_name: str) -> None:
+    """
+    Logs the prompt and completion token counts of one call at info level.
+
+    Reads the ``usage`` block of an OpenAI-shaped response, which vLLM and
+    llama.cpp both return. The message is in ``key=value`` form so token totals
+    can be summed from the logs, and the same values go in ``extra`` for
+    handlers that keep structured fields. Logs nothing if the server sent no
+    ``usage``.
+    """
+    if not _logger.isEnabledFor(logging.INFO):
+        return
+
+    usage = response.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if prompt_tokens is None and completion_tokens is None:
+        return
+
+    _logger.info(
+        "LLM token usage: model=%s prompt_tokens=%d completion_tokens=%d",
+        model_name,
+        prompt_tokens or 0,
+        completion_tokens or 0,
+        extra={
+            "model": model_name,
+            "prompt_tokens": prompt_tokens or 0,
+            "completion_tokens": completion_tokens or 0,
+        },
+    )
