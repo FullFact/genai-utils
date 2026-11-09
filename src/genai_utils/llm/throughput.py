@@ -3,6 +3,8 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 
+TOKEN_USAGE_EVENT_METRIC = "llm_token_usage"
+
 
 def log_tokens_per_second(response: dict[str, Any], elapsed: float) -> None:
     """
@@ -43,13 +45,15 @@ def log_tokens_per_second(response: dict[str, Any], elapsed: float) -> None:
 
 def log_token_usage(response: dict[str, Any], model_name: str) -> None:
     """
-    Logs the prompt and completion token counts of one call at info level.
+    Logs the token counts of one call at info level.
 
     Reads the ``usage`` block of an OpenAI-shaped response, which vLLM and
-    llama.cpp both return. The message is in ``key=value`` form so token totals
-    can be summed from the logs, and the same values go in ``extra`` for
-    handlers that keep structured fields. Logs nothing if the server sent no
-    ``usage``.
+    llama.cpp both return. The message is fixed so a log-based metric can match
+    it; the counts go in ``extra`` as ``model``, ``prompt_tokens`` and
+    ``completion_tokens``, which structured log handlers emit as fields.
+    ``reasoning_tokens`` is added when the server reports it in
+    ``usage.completion_tokens_details``, as OpenAI and some vLLM reasoning
+    parsers do. Logs nothing if the server sent no ``usage``.
     """
     if not _logger.isEnabledFor(logging.INFO):
         return
@@ -60,14 +64,15 @@ def log_token_usage(response: dict[str, Any], model_name: str) -> None:
     if prompt_tokens is None and completion_tokens is None:
         return
 
-    _logger.info(
-        "LLM token usage: model=%s prompt_tokens=%d completion_tokens=%d",
-        model_name,
-        prompt_tokens or 0,
-        completion_tokens or 0,
-        extra={
-            "model": model_name,
-            "prompt_tokens": prompt_tokens or 0,
-            "completion_tokens": completion_tokens or 0,
-        },
-    )
+    fields: dict[str, Any] = {
+        "event_metric": TOKEN_USAGE_EVENT_METRIC,
+        "model": model_name,
+        "prompt_tokens": prompt_tokens or 0,
+        "completion_tokens": completion_tokens or 0,
+    }
+    details = usage.get("completion_tokens_details") or {}
+    reasoning_tokens = details.get("reasoning_tokens")
+    if reasoning_tokens is not None:
+        fields["reasoning_tokens"] = reasoning_tokens
+
+    _logger.info("llm token usage", extra=fields)

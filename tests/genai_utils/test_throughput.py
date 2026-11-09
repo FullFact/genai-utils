@@ -43,14 +43,28 @@ def test_log_token_usage_logs_prompt_and_completion(caplog) -> None:
     response = {"usage": {"prompt_tokens": 1234, "completion_tokens": 56}}
     log_token_usage(response, model_name="topics")
 
-    assert (
-        "LLM token usage: model=topics prompt_tokens=1234 completion_tokens=56"
-        in caplog.text
-    )
-    record = caplog.records[0]
+    [record] = caplog.records
+    assert record.getMessage() == "llm token usage"
+    assert record.event_metric == "llm_token_usage"
     assert record.model == "topics"
     assert record.prompt_tokens == 1234
     assert record.completion_tokens == 56
+    assert not hasattr(record, "reasoning_tokens")
+
+
+def test_log_token_usage_includes_reasoning_tokens(caplog) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    response = {
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 300,
+            "completion_tokens_details": {"reasoning_tokens": 250},
+        }
+    }
+    log_token_usage(response, model_name="topics")
+
+    [record] = caplog.records
+    assert record.reasoning_tokens == 250
 
 
 def test_log_token_usage_silent_without_usage(caplog) -> None:

@@ -172,7 +172,7 @@ async def test_run_message_logs_token_usage(caplog) -> None:
     with patch("genai_utils.llm.serverless_openai.Serverless", serverless):
         await llm.run_message("hello", use_thinking=False)
 
-    assert (
-        "LLM token usage: model=claimants prompt_tokens=900 completion_tokens=40"
-        in caplog.text
-    )
+    [record] = [r for r in caplog.records if r.getMessage() == "llm token usage"]
+    assert record.model == "claimants"
+    assert record.prompt_tokens == 900
+    assert record.completion_tokens == 40
