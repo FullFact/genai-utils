@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -157,3 +158,21 @@ async def test_request_timeout_is_enforced_not_just_passed() -> None:
     with patch("genai_utils.llm.serverless_openai.Serverless", serverless):
         with pytest.raises(asyncio.TimeoutError):
             await llm.run_message("hello", use_thinking=False)
+
+
+async def test_run_message_logs_token_usage(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="genai_utils.llm.throughput")
+    response = {
+        **_completion("the answer"),
+        "usage": {"prompt_tokens": 900, "completion_tokens": 40},
+    }
+    serverless, _, _ = _fake_serverless(response)
+    llm = ServerlessChat(endpoint_name="ep", model_name="claimants", max_tokens=128)
+
+    with patch("genai_utils.llm.serverless_openai.Serverless", serverless):
+        await llm.run_message("hello", use_thinking=False)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "llm token usage"]
+    assert record.model == "claimants"
+    assert record.prompt_tokens == 900
+    assert record.completion_tokens == 40

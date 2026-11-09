@@ -1,6 +1,6 @@
 import logging
 
-from genai_utils.llm.throughput import log_tokens_per_second
+from genai_utils.llm.throughput import log_token_usage, log_tokens_per_second
 
 LOGGER_NAME = "genai_utils.llm.throughput"
 
@@ -36,3 +36,44 @@ def test_log_tokens_per_second_falls_back_to_usage(caplog) -> None:
 
     # 20 tokens over 2 seconds => 10 tok/s
     assert "10.0 tok/s" in caplog.text
+
+
+def test_log_token_usage_logs_prompt_and_completion(caplog) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    response = {"usage": {"prompt_tokens": 1234, "completion_tokens": 56}}
+    log_token_usage(response, model_name="topics")
+
+    [record] = caplog.records
+    assert record.getMessage() == "llm token usage"
+    assert record.event_metric == "llm_token_usage"
+    assert record.model == "topics"
+    assert record.prompt_tokens == 1234
+    assert record.completion_tokens == 56
+    assert not hasattr(record, "reasoning_tokens")
+
+
+def test_log_token_usage_includes_reasoning_tokens(caplog) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    response = {
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 300,
+            "completion_tokens_details": {"reasoning_tokens": 250},
+        }
+    }
+    log_token_usage(response, model_name="topics")
+
+    [record] = caplog.records
+    assert record.reasoning_tokens == 250
+
+
+def test_log_token_usage_silent_without_usage(caplog) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    log_token_usage({}, model_name="topics")
+    assert caplog.records == []
+
+
+def test_log_token_usage_silent_when_info_disabled(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
+    log_token_usage({"usage": {"prompt_tokens": 1}}, model_name="topics")
+    assert caplog.records == []

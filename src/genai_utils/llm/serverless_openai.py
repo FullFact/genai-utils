@@ -29,7 +29,7 @@ from vastai.serverless.client.endpoint import Endpoint_
 from genai_utils.llm import NoOutputError
 from genai_utils.llm.models import ChatModel
 from genai_utils.llm.retry import Retryable, check_n_attempts, retry_on_failure
-from genai_utils.llm.throughput import log_tokens_per_second
+from genai_utils.llm.throughput import log_token_usage, log_tokens_per_second
 
 _logger = logging.getLogger(__name__)
 
@@ -211,6 +211,7 @@ class ServerlessChat(ChatModel, Retryable):
 
         response = resp["response"]
         log_tokens_per_second(response, time.perf_counter() - start)
+        log_token_usage(response, self.model_name)
         response_text = (
             (response.get("choices") or [{}])[0].get("message", {}).get("content")
         )
